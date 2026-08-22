@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from goal_cascade.driver import GoalCascade
 from goal_cascade.store import DueRow, utcnow
 
@@ -41,12 +43,19 @@ def test_suspend_persists_the_state_that_must_survive(tmp_path):
     assert cascade.store.get("s1").resume_at == resume_at
 
 
-def test_suspend_without_resume_at_still_schedules(tmp_path):
-    """A missing timestamp must not strand the goal — default to a short wait."""
+def test_suspend_without_resume_at_is_a_contract_violation(tmp_path):
+    """A missing timestamp must fail loudly, not become an invented wait.
+
+    The driver used to default to "one minute from now", which scheduled a
+    resume the agent never asked for and could not see. Enforcement now lives
+    in the completion processor, which blocks a `suspended` payload with no
+    `resume_at` server-side — so reaching the driver without one means the
+    contract itself broke, and that should surface rather than be smoothed over.
+    """
     cascade = _cascade(tmp_path)
-    row = cascade._suspend({"outcome": "suspended", "progress_note": "n"})
-    assert row.resume_at
-    assert cascade.store.seconds_until_next() is not None
+    with pytest.raises(KeyError):
+        cascade._suspend({"outcome": "suspended", "progress_note": "n"})
+    assert cascade.store.seconds_until_next() is None
 
 
 def test_continuation_replays_note_and_handle_verbatim(tmp_path):
@@ -83,8 +92,9 @@ def test_continuation_is_readable_when_the_agent_recorded_nothing(tmp_path):
 def test_suspend_preserves_attempt_across_cycles(tmp_path):
     """Re-suspending the same session must not reset its idempotency counter."""
     cascade = _cascade(tmp_path)
-    cascade._suspend({"progress_note": "a"})
+    stamp = (utcnow() + timedelta(minutes=2)).isoformat()
+    cascade._suspend({"progress_note": "a", "resume_at": stamp})
     cascade.store.claim("s1")
-    cascade._suspend({"progress_note": "b"})
+    cascade._suspend({"progress_note": "b", "resume_at": stamp})
 
     assert cascade.store.get("s1").attempt == 1

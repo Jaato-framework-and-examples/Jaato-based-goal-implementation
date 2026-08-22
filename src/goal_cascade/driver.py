@@ -34,13 +34,12 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from jaato_sdk import ClientType, EventType, IPCRecoveryClient
 
-from .store import DueRow, GoalStore, utcnow
+from .store import DueRow, GoalStore
 
 # A resume that the agent scheduled unreasonably far out still has to be bounded
 # by something the operator can see; the budget is the real ceiling, this only
@@ -229,12 +228,19 @@ class GoalCascade:
         The row captures ``progress_note`` and ``watch_handle`` because those
         are replayed verbatim into the resumed turn — the store is the only
         thing standing between a compacted history and a lost goal.
+
+        ``resume_at`` is read directly, with no default. A ``suspended``
+        payload that omits it cannot reach here: the completion processor in
+        ``.jaato/scripts/processors/goal_contract.py`` blocks that completion
+        server-side and tells the agent to supply one. So a ``KeyError`` here
+        means the contract itself was broken — worth failing on, and much
+        better than the default this replaced, which quietly invented a
+        one-minute wait the agent never asked for and could not see.
         """
         assert self.session_id is not None
         row = DueRow(
             session_id=self.session_id,
-            resume_at=payload.get("resume_at")
-            or (utcnow() + timedelta(minutes=1)).isoformat(),
+            resume_at=payload["resume_at"],
             resume_reason=payload.get("resume_reason", ""),
             watch_handle=payload.get("watch_handle") or {},
             progress_note=payload.get("progress_note", ""),
