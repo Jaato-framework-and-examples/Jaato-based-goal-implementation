@@ -98,6 +98,12 @@ Provider and model live in `.jaato/profiles/goal-actor.yaml`, deliberately not
 in `.env` — one source of truth. Swapping them is a two-line change and nothing
 else in the repo moves.
 
+The profile references the credential as `${JAATO_OPENROUTER_API_KEY}`, the only
+scheme that resolves from a public checkout. A `pass://` URI needs the premium
+resolver, and an unregistered scheme **fails silently** — jaato warns, then sends
+the literal URI string as the API key, so you get an auth error that never
+mentions secret resolution.
+
 ### What the demo does
 
 `fixtures/slow_job.py` stands in for the real thing this pattern is for — a CI

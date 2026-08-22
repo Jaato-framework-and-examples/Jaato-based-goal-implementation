@@ -20,6 +20,12 @@ plugins:
   - filesystem_query
 
 plugin_configs:
+  openrouter:
+    # Referenced FROM the profile via env-var interpolation — the only scheme
+    # that works from a public checkout. A `pass://` URI needs the premium
+    # resolver, and an unregistered scheme fails silently: jaato warns, then
+    # sends the literal URI string as the API key.
+    api_key: "${JAATO_OPENROUTER_API_KEY}"
   permission:
     policy:
       # This example runs unattended, so there is no human to answer a prompt.
