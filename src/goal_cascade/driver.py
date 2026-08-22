@@ -161,6 +161,23 @@ class GoalCascade:
             return f"daemon reports no ceiling for cascade {self.cascade_id}"
         return None
 
+    def _watch_spawn_refusal(self, client: IPCRecoveryClient) -> "_SpawnRefusal":
+        """Watch for the daemon's reason while a spawn is attempted.
+
+        ``create_session`` reports failure as ``None``, which cannot say why.
+        The one reason the driver must tell apart is an exhausted cascade
+        budget: that is the operator's ceiling working, not the goal breaking,
+        and invariant 7 requires the two to exit differently.
+
+        The daemon refuses such a spawn rather than starting a doomed session —
+        a ceiling that must spend to enforce itself is not a ceiling — and says
+        so with ``ErrorEvent(error_type="CascadeExhaustedError")``. That event
+        is the only evidence available, so it is captured across the call.
+        """
+        watcher = _SpawnRefusal()
+        watcher.unsubscribe = client.subscribe(EventType.ERROR, watcher.record)
+        return watcher
+
     # ------------------------------------------------------------ turn cycle
 
     def _arm_completion(
@@ -363,16 +380,26 @@ class GoalCascade:
                 return 1
             self.log(f"[budget] {self.budget}")
 
-            self.session_id = await client.create_session(
-                profile=self.profile,
-                agent=self.agent,
-                cascade_driver_id=self.cascade_id,
-                timeout=60.0,
-            )
+            refusal = self._watch_spawn_refusal(client)
+            try:
+                self.session_id = await client.create_session(
+                    profile=self.profile,
+                    agent=self.agent,
+                    cascade_driver_id=self.cascade_id,
+                    timeout=60.0,
+                )
+            finally:
+                refusal.stop()
+
             if not self.session_id:
-                # The ceiling was verified above, so exhausted headroom is only
-                # one candidate. Do not assert a cause the driver cannot see —
-                # the daemon already logged the real one.
+                # A ceiling that stopped the goal is not a failure — the work
+                # was valid, the operator's limit simply ran out — so it must
+                # not exit like one. Everything else is a genuine refusal whose
+                # cause the driver cannot see; the daemon already logged it.
+                if refusal.exhausted:
+                    raise BudgetExhausted(
+                        refusal.message or "cascade budget has no headroom left"
+                    )
                 self.log("spawn refused — see the daemon error above for the cause")
                 return 1
 
@@ -418,6 +445,45 @@ class GoalCascade:
             return 2
         finally:
             await client.disconnect()
+
+
+class _SpawnRefusal:
+    """Captures the daemon's stated reason for refusing a spawn.
+
+    Records only the FIRST error seen. A refused spawn can be followed by
+    unrelated noise as the session tears down, and the first reason is the one
+    that explains the refusal.
+
+    Attributes:
+        exhausted: True when the daemon named the cascade budget — the signal
+            that separates "the ceiling stopped this" from "this broke".
+        message: The daemon's error text, for the operator.
+    """
+
+    #: The daemon's ``error_type`` when a spawn is refused for lack of headroom.
+    EXHAUSTED_ERROR_TYPE = "CascadeExhaustedError"
+
+    def __init__(self) -> None:
+        self.exhausted = False
+        self.message: Optional[str] = None
+        self.unsubscribe: Optional[Callable[[], None]] = None
+        self._seen = False
+
+    def record(self, event) -> None:
+        """Handler for ``EventType.ERROR`` while a spawn is in flight."""
+        if self._seen:
+            return
+        self._seen = True
+        self.message = getattr(event, "error", None)
+        self.exhausted = (
+            getattr(event, "error_type", None) == self.EXHAUSTED_ERROR_TYPE
+        )
+
+    def stop(self) -> None:
+        """Unsubscribe; safe to call more than once."""
+        if self.unsubscribe is not None:
+            self.unsubscribe()
+            self.unsubscribe = None
 
 
 class BudgetExhausted(RuntimeError):

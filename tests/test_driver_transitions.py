@@ -6,6 +6,7 @@ decide whether a goal advances — without needing a running daemon or a model.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -98,3 +99,74 @@ def test_suspend_preserves_attempt_across_cycles(tmp_path):
     cascade._suspend({"progress_note": "b", "resume_at": stamp})
 
     assert cascade.store.get("s1").attempt == 1
+
+
+class _FakeErrorEvent:
+    """Minimal stand-in for the daemon's ErrorEvent."""
+
+    def __init__(self, error_type: str, error: str) -> None:
+        self.error_type = error_type
+        self.error = error
+
+
+class _FakeClient:
+    """A client that refuses the spawn, reporting `error_type` first.
+
+    Mirrors the daemon's shape: `create_session` returns None on refusal and
+    the reason arrives separately as an ErrorEvent.
+    """
+
+    def __init__(self, error_type: str) -> None:
+        self._error_type = error_type
+        self._handlers = []
+        self.disconnected = False
+
+    def subscribe(self, _event_type, handler):
+        self._handlers.append(handler)
+        return lambda: self._handlers.remove(handler)
+
+    async def connect(self, timeout: float = 0.0) -> bool:
+        return True
+
+    async def cascade_budget_set(self, *_a, **_kw) -> None:
+        return None
+
+    async def cascade_budget_get(self, *_a, **_kw) -> None:
+        return None
+
+    async def create_session(self, **_kw):
+        for handler in list(self._handlers):
+            handler(_FakeErrorEvent(self._error_type, "no headroom left"))
+        return None
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
+def _run_refused_spawn(tmp_path, error_type: str) -> int:
+    """Drive run() to the spawn refusal and return its exit code."""
+    cascade = _cascade(tmp_path)
+    cascade.session_id = None
+    client = _FakeClient(error_type)
+    cascade._new_client = lambda: client
+    # The ceiling is verified before the spawn; that path has its own tests.
+    async def _no_refusal(_client, **_kw):
+        return None
+    cascade._budget_refusal = _no_refusal
+    return asyncio.run(cascade.run())
+
+
+def test_budget_exhausted_spawn_exits_two_not_one(tmp_path):
+    """The ceiling stopping a goal must never look like the goal failing.
+
+    A run stopped by its budget is a different result from a broken one, and
+    automation keys on the exit code to tell them apart (invariant 7). This is
+    the only path that raises BudgetExhausted, so without it both the exception
+    and its handler are dead code.
+    """
+    assert _run_refused_spawn(tmp_path, "CascadeExhaustedError") == 2
+
+
+def test_other_spawn_refusals_still_exit_one(tmp_path):
+    """Exit 2 means the ceiling specifically, not any refused spawn."""
+    assert _run_refused_spawn(tmp_path, "ConfigurationError") == 1

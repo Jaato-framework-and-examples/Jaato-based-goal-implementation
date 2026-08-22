@@ -65,10 +65,26 @@ def main() -> int:
         # haiku and keeps going; the ceiling itself still stops it at 100 %.
         #
         # Rungs latch (fire once) and stack, so a ladder is ordered by `at`.
-        degrade=[{
-            "at": 80.0,
-            "model_tiers": {"planner": {"model": "anthropic/claude-haiku-4.5"}},
-        }],
+        #
+        # The last two rungs are what actually bound the goal. `limits` alone
+        # do NOT: they gate SPAWNS, and this cascade spawns exactly once, at
+        # the start, when the budget is untouched. Nothing is ever admitted
+        # again, so nothing is ever refused — a goal that never converges would
+        # run past every limit set here. Only the degrade ladder reaches a
+        # session that is already running.
+        #
+        #   95% finalize — tell the actor to wrap up and answer with what it
+        #                  has, so a partial REPORT.md still gets written
+        #  100% abort    — hard stop, for an actor that talks past the first
+        #                  warning. Latches, so it cannot be resumed past.
+        degrade=[
+            {
+                "at": 80.0,
+                "model_tiers": {"planner": {"model": "anthropic/claude-haiku-4.5"}},
+            },
+            {"at": 95.0, "action": "finalize"},
+            {"at": 100.0, "action": "abort"},
+        ],
     )
     return asyncio.run(cascade.run())
 
