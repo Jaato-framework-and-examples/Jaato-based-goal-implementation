@@ -195,8 +195,18 @@ class GoalCascade:
         def on_failed(event) -> None:
             if done.is_set():
                 return
+            # A session ending with reason "natural" is the expected unload
+            # BETWEEN turns, not a failed turn. `signal_completion` releases
+            # the runner slot, so the previous turn's termination routinely
+            # lands after this turn has already been armed — reporting it
+            # would turn every healthy suspend into an error. A real failure
+            # arrives as AGENT_ERROR, or as a termination whose reason is
+            # something other than "natural" (carrying `error_summary`).
+            if getattr(event, "reason", None) == "natural":
+                return
             captured["_failure"] = (
                 getattr(event, "error", None)
+                or getattr(event, "error_summary", None)
                 or getattr(event, "reason", None)
                 or type(event).__name__
             )
