@@ -10,3 +10,4 @@ dist/
 *.egg-info/
 fixtures/.job-status.json
 .jaato/.artifact_tracker.json
+REPORT.md
