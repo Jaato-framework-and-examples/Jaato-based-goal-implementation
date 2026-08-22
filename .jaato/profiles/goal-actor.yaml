@@ -1,0 +1,85 @@
+# The goal actor: one agent that pursues a goal across many turns, suspending
+# itself whenever it must wait on something outside its control.
+#
+# Swap provider/model here — they are deliberately the first two keys.  See
+# .env.example for the matching credential variable.
+name: goal-actor
+description: >
+  Pursues a stated goal, and whenever it must wait on something it does not
+  control, ends its turn with a `suspended` completion payload naming when to
+  resume and what to re-inspect.  Never sleeps or blocks inside a turn.
+
+provider: openrouter
+model: anthropic/claude-haiku-4-5
+
+plugins:
+  # (preload) forces these eager: without it the file_edit and cli tools are
+  # discovery-gated, and a small model may never call list_tools to find them.
+  - cli(preload)
+  - file_edit(preload)
+  - filesystem_query
+
+plugin_configs:
+  permission:
+    policy:
+      # This example runs unattended, so there is no human to answer a prompt.
+      # A real deployment gates the goal actor like any other agent.
+      defaultPolicy: allow
+
+# Context grows monotonically because every resume continues the SAME session.
+# `budget` is the strategy that makes policy-aware removal decisions and can
+# collect continuously rather than only at a threshold breach.
+#
+# Correctness does NOT depend on this keeping anything: the driver re-injects
+# `watch_handle` and `progress_note` verbatim on every resume, so history GC is
+# free to be as aggressive as it likes.  See README §"Why same-session is safe".
+gc:
+  type: budget
+  threshold_percent: 75.0
+
+# Declaring a schema is what exposes `signal_completion` at all.  The two
+# branches ARE the pattern: the agent's only exit is to say either "done" or
+# "paused, wake me at T".
+completion_payload_schema:
+  type: object
+  additionalProperties: false
+  required:
+    - outcome
+    - progress_note
+  properties:
+    outcome:
+      type: string
+      enum: [finished, suspended]
+      description: >
+        `finished` only when the goal is actually achieved.  `suspended` when
+        waiting on something outside your control.
+    progress_note:
+      type: string
+      description: >
+        What changed this turn, and what state the next turn inherits.  Written
+        for your future self — the driver replays this back to you verbatim on
+        resume, so it is the ONLY thing guaranteed to survive.
+    result:
+      type: object
+      description: Final result. Required shape when outcome is `finished`.
+      additionalProperties: true
+    resume_at:
+      type: string
+      description: >
+        ISO-8601 UTC timestamp for when to resume, e.g. 2026-08-22T14:05:00Z.
+        Required when outcome is `suspended`.
+    resume_reason:
+      type: string
+      description: What you are waiting for. Required when outcome is `suspended`.
+    watch_handle:
+      type: object
+      description: >
+        How to re-inspect the thing you are waiting on — a path, job id, or URL.
+        Required when outcome is `suspended`; replayed back to you on resume.
+      additionalProperties: true
+    warnings:
+      type: array
+      items: { type: string }
+    errors:
+      type: array
+      items: { type: string }
