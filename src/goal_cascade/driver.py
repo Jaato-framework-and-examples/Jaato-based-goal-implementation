@@ -32,6 +32,7 @@ a driver that dies between waking and recording cannot double-drive a turn.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -45,6 +46,12 @@ from .store import DueRow, GoalStore, utcnow
 # by something the operator can see; the budget is the real ceiling, this only
 # stops one absurd timestamp from parking the driver for a week.
 MAX_SLEEP_SECONDS = 3600.0
+
+# How long a single driven turn may run before the driver stops waiting on it.
+# Not a budget — the cascade budget is the real ceiling. This exists only so a
+# turn that emits no terminal event at all fails visibly instead of parking the
+# driver forever.
+TURN_TIMEOUT_SECONDS = 300.0
 
 
 class GoalCascade:
@@ -106,27 +113,115 @@ class GoalCascade:
             ),
         )
 
+    # ---------------------------------------------------------------- budget
+
+    async def _budget_refusal(
+        self, client: IPCRecoveryClient, *, timeout: float = 10.0
+    ) -> Optional[str]:
+        """Read the ceiling back; return why it is absent, or ``None`` if set.
+
+        ``cascade_budget_set`` is fire-and-forget. A malformed budget is
+        refused *asynchronously*, so the first visible symptom is an unrelated
+        command failing later — which is exactly how an invalid degrade rung
+        once surfaced as "spawn refused, may have no headroom".
+
+        A ceiling that was never accepted enforces nothing, and invariant 7
+        requires it to enforce. So the ceiling is a precondition to be proven
+        before the goal is allowed to start, not something assumed from the
+        absence of an error.
+
+        The daemon answers ``cascade.budget.get`` with a ``SystemMessageEvent``
+        carrying JSON: the declared limits, or ``{"declared": false}`` when the
+        cascade id is uncapped.
+        """
+        answered = asyncio.Event()
+        state: Dict[str, Any] = {}
+
+        def on_system(event) -> None:
+            try:
+                data = json.loads(getattr(event, "message", "") or "")
+            except (json.JSONDecodeError, TypeError):
+                return  # some other system message — keep listening
+            if not isinstance(data, dict):
+                return
+            if "declared" not in data and "limits" not in data:
+                return
+            state.update(data)
+            answered.set()
+
+        unsubscribe = client.subscribe(EventType.SYSTEM_MESSAGE, on_system)
+        try:
+            await client.cascade_budget_get(self.cascade_id)
+            await asyncio.wait_for(answered.wait(), timeout)
+        except asyncio.TimeoutError:
+            return f"daemon did not report budget state within {timeout:.0f}s"
+        finally:
+            unsubscribe()
+
+        if state.get("declared") is False or not state.get("limits"):
+            return f"daemon reports no ceiling for cascade {self.cascade_id}"
+        return None
+
     # ------------------------------------------------------------ turn cycle
 
-    async def _await_completion(self, client: IPCRecoveryClient) -> Dict[str, Any]:
-        """Wait for the agent's next ``signal_completion`` and return its payload.
+    def _arm_completion(
+        self, client: IPCRecoveryClient
+    ) -> Callable[[], Any]:
+        """Subscribe for the turn's terminal event, and return a waiter.
 
-        Subscribes before the turn is driven so a fast completion cannot land
-        before the handler is armed. Returns the validated payload dict; an
-        agent whose profile declared no schema would yield ``{}``, which the
-        caller treats as a protocol error rather than a completion.
+        Call this BEFORE driving the turn — before ``send_message`` or
+        ``session.wake`` — and await the returned waiter afterwards. Arming
+        after the drive is a race: a turn that ends quickly can emit its event
+        before the handler exists, and the driver then waits for something that
+        already happened.
+
+        A turn has three terminal outcomes, not one. ``AGENT_COMPLETED`` is the
+        good one; ``AGENT_ERROR`` and ``SESSION_TERMINATED`` are the others, and
+        a driver deaf to those hangs on every real failure — an expired API key
+        ends the session without ever producing a completion.
+
+        The waiter returns the validated payload. On failure it returns a dict
+        carrying ``_failure``, which the caller reports rather than mistaking
+        for a completion.
         """
         done = asyncio.Event()
         captured: Dict[str, Any] = {}
+        unsubscribes = []
 
         def on_completed(event) -> None:
             captured.update(getattr(event, "payload", None) or {})
             captured.setdefault("_success", getattr(event, "success", True))
             done.set()
 
-        client.subscribe_once(EventType.AGENT_COMPLETED, on_completed)
-        await done.wait()
-        return captured
+        def on_failed(event) -> None:
+            if done.is_set():
+                return
+            captured["_failure"] = (
+                getattr(event, "error", None)
+                or getattr(event, "reason", None)
+                or type(event).__name__
+            )
+            done.set()
+
+        unsubscribes.append(
+            client.subscribe_once(EventType.AGENT_COMPLETED, on_completed))
+        for failure_event in (EventType.AGENT_ERROR, EventType.SESSION_TERMINATED):
+            unsubscribes.append(client.subscribe(failure_event, on_failed))
+
+        async def wait(timeout: float = TURN_TIMEOUT_SECONDS) -> Dict[str, Any]:
+            try:
+                await asyncio.wait_for(done.wait(), timeout)
+            except asyncio.TimeoutError:
+                captured["_failure"] = (
+                    f"no terminal event within {timeout:.0f}s — the turn "
+                    "neither completed nor reported an error"
+                )
+            finally:
+                for unsubscribe in unsubscribes:
+                    unsubscribe()
+            return captured
+
+        return wait
 
     def _suspend(self, payload: Dict[str, Any]) -> DueRow:
         """Persist the agent's requested resume as a due row.
@@ -157,6 +252,14 @@ class GoalCascade:
         This is the guarantee that makes same-session resume safe: whatever
         garbage collection did to the transcript, these two fields arrive intact
         in the woken turn.
+
+        Carries STATE, not orders. ``session.wake`` wraps this text as untrusted
+        external content — deliberately, so a wake cannot inject instructions —
+        which means the agent reads it as data. The closing line below is a
+        reminder, not a control: what actually obliges the agent to exit through
+        ``signal_completion`` is its persona, a trusted instruction source.
+        Putting that requirement only here produced a resumed turn that checked
+        the job, answered in prose, and stranded the goal.
         """
         handle = row.watch_handle or {}
         lines = [
@@ -194,6 +297,21 @@ class GoalCascade:
             return False
         self.resumes += 1
         self.log(f"[resume #{self.resumes}] {row.resume_reason or 'continuing'}")
+
+        # Re-attach BEFORE waking. A suspend releases the runner slot, and a
+        # cascade session that has gone quiet is unloaded — which also drops
+        # this client's attachment. `session.wake` revives the session and
+        # drives the turn, but it does not restore anyone's event stream, so a
+        # driver that only wakes gets a turn it cannot observe: the agent
+        # completes normally and the driver waits out its timeout having heard
+        # nothing at all.
+        #
+        # This is NOT the attach-then-send that invariant 2 rules out. Nothing
+        # is sent here; the wake below is still what drives the turn. Attaching
+        # only restores delivery, and it must happen before the wake, or the
+        # completion can land before anyone is listening.
+        await client.attach_session(row.session_id)
+
         await client.execute_command(
             "session.wake",
             payload={
@@ -221,6 +339,12 @@ class GoalCascade:
             await client.cascade_budget_set(
                 self.cascade_id, limits=self.budget, degrade=self.degrade
             )
+            refusal = await self._budget_refusal(client)
+            if refusal is not None:
+                self.log(f"[error] cascade budget was not accepted: {refusal}")
+                self.log("[error] refusing to start — a goal with no ceiling"
+                         " has nothing to stop it (see invariant 7)")
+                return 1
             self.log(f"[budget] {self.budget}")
 
             self.session_id = await client.create_session(
@@ -230,13 +354,24 @@ class GoalCascade:
                 timeout=60.0,
             )
             if not self.session_id:
-                self.log("spawn refused — the cascade budget may have no headroom")
+                # The ceiling was verified above, so exhausted headroom is only
+                # one candidate. Do not assert a cause the driver cannot see —
+                # the daemon already logged the real one.
+                self.log("spawn refused — see the daemon error above for the cause")
                 return 1
 
+            # Armed before the goal is sent, not after — see _arm_completion.
+            wait_for_turn = self._arm_completion(client)
             await client.send_message(self.goal)
 
             while True:
-                payload = await self._await_completion(client)
+                payload = await wait_for_turn()
+
+                failure = payload.get("_failure")
+                if failure:
+                    self.log(f"[error] turn ended without completing: {failure}")
+                    return 1
+
                 outcome = payload.get("outcome")
 
                 if outcome == "finished":
@@ -255,6 +390,10 @@ class GoalCascade:
                 row = self._suspend(payload)
                 self.log(f"[suspended] until {row.resume_at} — {row.resume_reason}")
                 await self._sleep_until_due()
+                # Arm before waking, for the same reason as the initial send:
+                # the resumed turn must not be able to finish before anyone is
+                # listening for it.
+                wait_for_turn = self._arm_completion(client)
                 if not await self._resume(client):
                     self.log("[error] nothing to resume — state lost?")
                     return 1

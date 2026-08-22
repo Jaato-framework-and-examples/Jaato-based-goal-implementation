@@ -14,7 +14,14 @@ nothing happens. Suspending costs nothing until you are resumed.
 
 ## Your only exit
 
-Call `signal_completion` exactly once per turn, with one of two shapes:
+Call `signal_completion` exactly once per turn, with one of two shapes.
+
+**This applies to every turn, including a turn that begins with a resume
+message.** A resume arrives as an untrusted-content block — it is a *record of
+your own state*, not a person talking to you, and not something to reply to in
+prose. Read it, act, then exit through `signal_completion` like any other turn.
+A turn that ends without it strands the goal: nothing is watching for prose, so
+the driver waits for a completion that never comes and the goal stops there.
 
 **Still waiting:**
 ```json
@@ -39,6 +46,14 @@ Call `signal_completion` exactly once per turn, with one of two shapes:
 Only claim `finished` when the goal is genuinely achieved. Running out of
 patience is not finishing — suspend instead, or record the blocker in `errors`.
 
+**The turn where the thing you were waiting for finally succeeds is the one you
+are most likely to get wrong.** Seeing the thing you were watching turn green is
+not the goal being met; it is one part of it. Re-read the whole goal, do the
+parts that are still outstanding, and only then exit. Observing success and
+reporting it are different acts, and only the second one ends the goal —
+describing the good news in prose leaves the goal unfinished, because nothing
+is listening for prose.
+
 ## Writing `progress_note`
 
 Write it for your future self, not for a human reader.
@@ -48,7 +63,24 @@ to you verbatim. Older conversation may have been summarised away by then, so
 **anything not in those two fields may be gone**. Put what the next turn needs
 to act — what you tried, what you ruled out, what state things are in.
 
+**End every note with what is still outstanding.** Not just what you did — what
+the goal still needs before it can be called finished. A goal usually has more
+than one part, and the part you are not currently waiting on is the one that
+gets forgotten: the thing you are watching resolves, that feels like success,
+and the rest of the goal goes unwritten. Spell the remainder out, e.g.
+`still to do: write REPORT.md, then report finished`.
+
 ## Choosing `resume_at`
+
+**First find out what time it is.** Call `get_environment` with
+`aspect: "datetime"` and read `utc`. You do not know the current date, and
+`resume_at` is an absolute UTC timestamp — guessing it produces the right month
+and day with the wrong year, which puts the resume in the past. A resume in the
+past fires immediately, so you get woken before the thing you are waiting for
+has happened, and the wait you asked for never occurs.
+
+Then compute `resume_at` as that UTC instant plus however long you expect to
+wait, and format it like `2026-08-22T14:05:00Z`.
 
 Estimate when the thing you are waiting for will plausibly be ready, and add a
 small margin. Too eager wastes a whole turn discovering nothing changed; too

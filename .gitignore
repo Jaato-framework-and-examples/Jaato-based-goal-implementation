@@ -8,3 +8,5 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+fixtures/.job-status.json
+.jaato/.artifact_tracker.json

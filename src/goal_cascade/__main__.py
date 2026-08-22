@@ -56,9 +56,19 @@ def main() -> int:
             "seconds": args.max_seconds,
         },
         # A brownout ladder: the goal gets cheaper as it burns budget rather
-        # than simply dying at the ceiling. Rungs are declared here so the
-        # example shows the shape; tier names come from the profile's models.
-        degrade=[{"at": 80.0, "action": "warn"}],
+        # than simply dying at the ceiling.
+        #
+        # A rung cheapens a goal by REBINDING a tier, not by naming an action —
+        # `model_tiers` here is a sparse overlay onto the table in
+        # .jaato/profiles/goal-actor.yaml, and `planner` is the tier the actor
+        # runs in. At 80 % of any budget dimension it drops from sonnet to
+        # haiku and keeps going; the ceiling itself still stops it at 100 %.
+        #
+        # Rungs latch (fire once) and stack, so a ladder is ordered by `at`.
+        degrade=[{
+            "at": 80.0,
+            "model_tiers": {"planner": {"model": "anthropic/claude-haiku-4.5"}},
+        }],
     )
     return asyncio.run(cascade.run())
 

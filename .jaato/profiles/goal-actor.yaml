@@ -1,7 +1,7 @@
 # The goal actor: one agent that pursues a goal across many turns, suspending
 # itself whenever it must wait on something outside its control.
 #
-# Swap provider/model here — they are deliberately the first two keys.  See
+# Swap the provider here, and the models in `model_tiers` just below it.  See
 # .env.example for the matching credential variable.
 name: goal-actor
 description: >
@@ -10,13 +10,51 @@ description: >
   resume and what to re-inspect.  Never sleeps or blocks inside a turn.
 
 provider: openrouter
-model: anthropic/claude-haiku-4-5
+
+# `model:` duplicates `model_tiers[initial]` and `jaato-scaffold validate` will
+# tell you it is ignored. It is still required, for a reason the warning does
+# not know about: several places derive "the session's model" independently.
+# PR #575 unified two of them (the bootstrap gate and the runner spawn
+# envelope), but `JaatoServer.model_name` is still assigned from
+# `profile.model` alone (core.py ~1947). Tiers-only therefore leaves it None,
+# and session creation dies building its SessionInfoEvent:
+#
+#   ValidationError: 1 validation error for SessionInfoEvent
+#   model_name  ... string_type
+#
+# which reaches the driver only as a dropped connection and "spawn refused".
+# Keep this equal to the `initial` tier so the two never disagree.
+# Reported upstream; delete once that third derivation is unified too.
+model: anthropic/claude-sonnet-4.5
+#
+# The brownout ladder's rungs. The driver's cascade budget declares a rung that
+# REBINDS `planner` to the cheap model once the goal has burned 80 % of any
+# budget dimension — so the goal gets cheaper as it runs, instead of dying at
+# the ceiling.
+#
+# The agent never calls `enter_tier` here: it starts in `initial` and stays
+# there. Degradation works by changing what that tier POINTS AT, which is why
+# no persona change is needed to make the ladder work.
+#
+# V1 requires every tier to share one provider; both of these ride `openrouter`
+# by omitting `provider:`, so they inherit the session's.
+model_tiers:
+  planner: anthropic/claude-sonnet-4.5
+  executor: anthropic/claude-haiku-4.5
+  initial: planner
+  fallback: executor
 
 plugins:
   # (preload) forces these eager: without it the file_edit and cli tools are
   # discovery-gated, and a small model may never call list_tools to find them.
   - cli(preload)
   - file_edit(preload)
+  # `resume_at` is an ABSOLUTE timestamp, and a model does not know what day it
+  # is — left to guess, it emits the right month and day with the wrong YEAR,
+  # which lands the resume in the past and skips the wait entirely. Preloaded
+  # for the same reason as the two above: an eagerly-offered tool gets called,
+  # a discovery-gated one may not.
+  - environment(preload)
   - filesystem_query
 
 plugin_configs:
@@ -25,6 +63,11 @@ plugin_configs:
     # that works from a public checkout. A `pass://` URI needs the premium
     # resolver, and an unregistered scheme fails silently: jaato warns, then
     # sends the literal URI string as the API key.
+    #
+    # With the premium resolver installed a `pass://` URI does work here, and
+    # is resolved daemon-side. Point it at the SECRET, not its folder:
+    # `pass show` on a directory prints a tree listing, which passes through
+    # as a short nonsense key and 401s with "Missing Authentication header".
     api_key: "${JAATO_OPENROUTER_API_KEY}"
   permission:
     policy:
@@ -46,6 +89,18 @@ gc:
 # Declaring a schema is what exposes `signal_completion` at all.  The two
 # branches ARE the pattern: the agent's only exit is to say either "done" or
 # "paused, wake me at T".
+# JSON Schema constrains field SHAPES, but it cannot say "resume_at is required
+# when outcome is suspended" — the descriptions below state that in prose, and
+# prose does not validate. This processor enforces the two branches, and checks
+# a `finished` claim against the job's own status file and the report on disk
+# rather than taking the agent's word for it.
+#
+# A returned error list BLOCKS the completion and is replayed to the agent, so
+# the messages are written as instructions for the retry.
+completion_processors:
+  - script: scripts/processors/goal_contract.py
+    on_error: fail_completion
+
 completion_payload_schema:
   type: object
   additionalProperties: false
