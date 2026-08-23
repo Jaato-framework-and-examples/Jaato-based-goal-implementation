@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -50,6 +51,12 @@ MAX_SLEEP_SECONDS = 3600.0
 # Not a budget — the cascade budget is the real ceiling. This exists only so a
 # turn that emits no terminal event at all fails visibly instead of parking the
 # driver forever.
+#
+# This is a DEFAULT, not a limit: `turn_timeout` overrides it. The value that
+# suits a fixture whose turns take seconds will cut off an agent doing real
+# work — a single turn spent reading an unfamiliar codebase, editing it and
+# running its tests can easily outlast five minutes, and killing that is
+# discarding the work, not catching a hang.
 TURN_TIMEOUT_SECONDS = 300.0
 
 # ``SessionTerminatedEvent.reason`` when a degrade rung's terminal action stops
@@ -57,6 +64,10 @@ TURN_TIMEOUT_SECONDS = 300.0
 # "stopped at the ceiling" from "broke" is what exit code 2 is for, and doing it
 # by matching the daemon's prose would be a guess dressed as a check.
 CEILING_REASON = "budget_exhausted"
+
+# How long to wait before waking an agent whose finish was refused. Short: it
+# is not waiting on the world, only on being told what was wrong.
+RETRY_AFTER_SECONDS = 5
 
 
 class GoalCascade:
@@ -80,7 +91,8 @@ class GoalCascade:
         state_path: str = ".goal-cascade-state/due.json",
         budget: Optional[Dict[str, float]] = None,
         degrade: Optional[list] = None,
-        verify_finished: Optional[Callable[[], Optional[str]]] = None,
+        turn_timeout: float = TURN_TIMEOUT_SECONDS,
+        verify_finished: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
         log: Callable[[str], None] = print,
     ) -> None:
         self.goal = goal
@@ -91,6 +103,7 @@ class GoalCascade:
         self.agent = agent
         self.budget = budget or {"turns": 40, "usd": 1.0, "seconds": 3600}
         self.degrade = degrade
+        self.turn_timeout = turn_timeout
         self.verify_finished = verify_finished
         self.log = log
         self.store = GoalStore(Path(workspace) / state_path)
@@ -256,7 +269,8 @@ class GoalCascade:
         for failure_event in (EventType.AGENT_ERROR, EventType.SESSION_TERMINATED):
             unsubscribes.append(client.subscribe(failure_event, on_failed))
 
-        async def wait(timeout: float = TURN_TIMEOUT_SECONDS) -> Dict[str, Any]:
+        async def wait(timeout: Optional[float] = None) -> Dict[str, Any]:
+            timeout = self.turn_timeout if timeout is None else timeout
             try:
                 await asyncio.wait_for(done.wait(), timeout)
             except asyncio.TimeoutError:
@@ -378,7 +392,7 @@ class GoalCascade:
         )
         return True
 
-    def _reject_unproven_finish(self) -> Optional[str]:
+    def _reject_unproven_finish(self, payload: Dict[str, Any]) -> Optional[str]:
         """Ask the operator's verifier whether the finish is believable.
 
         Returns a reason to refuse, or ``None`` to accept. With no verifier
@@ -402,10 +416,14 @@ class GoalCascade:
         Deliberately generic: the driver still does not know what "done" means
         for any particular goal. It knows only that the operator may hold
         evidence it should consult before believing one.
+
+        The payload is passed through because a completion often NAMES its own
+        evidence — a patch to re-apply, an artifact to re-check. The agent says
+        where to look; the driver decides what it finds there.
         """
         if self.verify_finished is None:
             return None
-        return self.verify_finished()
+        return self.verify_finished(payload)
 
     # ----------------------------------------------------------------- entry
 
@@ -475,10 +493,36 @@ class GoalCascade:
                 outcome = payload.get("outcome")
 
                 if outcome == "finished":
-                    refusal = self._reject_unproven_finish()
+                    refusal = self._reject_unproven_finish(payload)
                     if refusal is not None:
-                        self.log(f"[error] refusing the finish: {refusal}")
-                        return 1
+                        # Refusing is not failing. The agent gets told why and
+                        # woken to try again — a rejected finish is just
+                        # another resume, carried on the same replay channel
+                        # as any other state.
+                        self.log(f"[rejected] {refusal}")
+                        row = self._suspend({
+                            "resume_at": (
+                                datetime.now(timezone.utc)
+                                + timedelta(seconds=RETRY_AFTER_SECONDS)
+                            ).isoformat(),
+                            "resume_reason": "the finish was refused",
+                            "progress_note": (
+                                f"My `finished` claim was REJECTED by the "
+                                f"driver's verification: {refusal}. The tests "
+                                "that count are re-run from a clean checkout "
+                                "with the project's own test files restored, "
+                                "so weakening or editing tests locally changes "
+                                "nothing. Fix the underlying problem and "
+                                "produce a corrected patch."
+                            ),
+                            "watch_handle": payload.get("watch_handle") or {},
+                        })
+                        await self._sleep_until_due()
+                        wait_for_turn = self._arm_completion(client)
+                        if not await self._resume(client):
+                            self.log("[error] nothing to resume — state lost?")
+                            return 1
+                        continue
                     self.store.drop(self.session_id)
                     self.log(f"[finished] {payload.get('progress_note', '')}")
                     self.log(f"[result] {payload.get('result')}")

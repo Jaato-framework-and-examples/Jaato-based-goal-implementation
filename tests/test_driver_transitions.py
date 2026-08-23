@@ -237,10 +237,23 @@ def test_a_natural_unload_is_neither(tmp_path):
 
 
 def _run_finish(tmp_path, verifier):
-    """Drive run() to a `finished` completion and return the exit code."""
+    """Drive run() through `finished` completions and return the exit code.
+
+    The fake client emits a completion for the initial send AND for each
+    session.wake, so a refused finish can be observed looping rather than
+    terminating — which is the behaviour that matters: rejection is feedback,
+    not failure.
+    """
+    from jaato_sdk import EventType
+
     cascade = _cascade(tmp_path)
     cascade.verify_finished = verifier
     handlers = {}
+
+    class _Done:
+        payload = {"outcome": "finished", "progress_note": "n",
+                   "result": {"ok": 1}, "patch_path": "fix.diff"}
+        success = True
 
     class _C:
         def subscribe(self, event_type, h):
@@ -248,6 +261,10 @@ def _run_finish(tmp_path, verifier):
             return lambda: None
 
         subscribe_once = subscribe
+
+        def _fire(self):
+            for h in handlers.get(EventType.AGENT_COMPLETED, []):
+                h(_Done())
 
         async def connect(self, timeout: float = 0.0):
             return True
@@ -259,15 +276,13 @@ def _run_finish(tmp_path, verifier):
             return "s1"
 
         async def send_message(self, *a, **kw):
-            from jaato_sdk import EventType
+            self._fire()
 
-            class _Done:
-                payload = {"outcome": "finished", "progress_note": "n",
-                           "result": {"ok": 1}}
-                success = True
+        async def attach_session(self, *a, **kw):
+            return True
 
-            for h in handlers.get(EventType.AGENT_COMPLETED, []):
-                h(_Done())
+        async def execute_command(self, *a, **kw):
+            self._fire()          # session.wake drives the next turn
 
         async def disconnect(self):
             return None
@@ -279,21 +294,41 @@ def _run_finish(tmp_path, verifier):
         return None
 
     cascade._budget_refusal = _no_refusal
+
+    async def _no_sleep():
+        return None
+
+    cascade._sleep_until_due = _no_sleep
     return asyncio.run(cascade.run())
 
 
-def test_an_unproven_finish_is_refused(tmp_path):
-    """The driver, not the agent, decides whether a finish is believable.
+def test_a_refused_finish_resumes_instead_of_failing(tmp_path):
+    """Rejection is feedback. The agent is told why and woken to try again.
 
-    A completion processor cannot make this call: it runs on the agent's
-    turn-exit path, in the agent's session, over the workspace the agent
-    edits. Forging this example's own status file took two lines.
+    Exiting here would throw away a recoverable turn — the agent's claim was
+    wrong, not its session. The reason rides the same replay channel as any
+    other state, so it survives the eviction that happens in between.
     """
-    assert _run_finish(tmp_path, lambda: "no execution receipt") == 1
+    seen = []
+
+    def verifier(payload):
+        seen.append(payload.get("patch_path"))
+        return "the suite failed on a clean checkout" if len(seen) == 1 else None
+
+    assert _run_finish(tmp_path, verifier) == 0
+    assert len(seen) == 2, "the agent should have been resumed and re-checked"
 
 
-def test_a_proven_finish_is_accepted(tmp_path):
-    assert _run_finish(tmp_path, lambda: None) == 0
+def test_the_verifier_sees_the_payload(tmp_path):
+    """A completion names its own evidence; the driver decides what it finds."""
+    got = {}
+
+    def verifier(payload):
+        got.update(payload)
+        return None
+
+    assert _run_finish(tmp_path, verifier) == 0
+    assert got["patch_path"] == "fix.diff"
 
 
 def test_no_verifier_means_the_agents_word_stands(tmp_path):
