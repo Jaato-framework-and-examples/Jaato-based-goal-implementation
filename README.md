@@ -145,14 +145,52 @@ Three details that carry more weight than their size suggests:
 
 ### The ceiling is the cascade budget
 
-`cascade_budget_set()` bounds the whole goal — `usd`, `tokens`, `seconds`,
-`tool_calls`, `turns` — and refuses a spawn with no headroom left. A goal that
-never converges still terminates, and exits `2` rather than `0` so automation
-can tell "stopped at the ceiling" from "achieved".
+**Limits account; rungs act.** `cascade_budget_set()` declares both, and the
+distinction is the whole mechanism. The `limits` — `usd`, `tokens`, `seconds`,
+`tool_calls`, `turns` — are accounting: they accumulate continuously and decide
+where on the ladder you are. What *happens* at a threshold is whatever the
+`degrade` ladder says. A ladder with no terminal action correctly answers "over
+budget" with "switch to the cheaper model", and a goal that never converges then
+runs past every limit you set.
+
+So the ceiling here is the last two rungs, not the numbers:
+
+```python
+degrade=[
+    {"at":  80.0, "model_tiers": {"planner": {"model": "…haiku-4.5"}}},
+    {"at":  95.0, "action": "finalize"},   # wrap up with what you have
+    {"at": 100.0, "action": "abort"},      # hard stop; further turns refused
+]
+```
+
+`abort` latches, so the session refuses subsequent turns rather than serving
+them — a ceiling that only cancelled one turn could be talked past.
+
+A separate path bounds *admission*: a spawn into a cascade whose pot is dry is
+refused outright rather than started and killed, and the driver exits `2` for
+that case so automation can tell "stopped at the ceiling" from "broke".
+
+**A mid-flight ceiling stop currently exits `1`, not `2`.** When a rung aborts a
+running session, the refusal reaches a `session.wake`-driven client as prose and
+a log line — there is no terminal event and no typed reason to branch on. The
+driver reports and exits non-zero, but cannot yet say *why*. Distinguishing it
+would mean substring-matching the daemon's output, which is worse than the
+honest ambiguity. Reported upstream; this paragraph goes when a typed signal
+lands.
 
 **`turns` is a turn counter, not a resume count.** One resume cycle usually
 costs several turns (inspect → act → signal). The driver *reports* its resume
 count; the budget *enforces* the ceiling. They are not the same number.
+
+**Counting across suspends needs jaato-server ≥ `6261b10e`.** A suspended
+session is unloaded — jaato evicts on orphan, and a driver holding the clock is
+orphaned during every wait — so accumulated usage has to survive a reload for a
+cross-turn ceiling to mean anything. Before that commit it did not, and the
+dimensions that bound *long* goals were exactly the ones that reset: `usd` still
+worked, because it can be crossed inside a single turn, while `turns` and
+`seconds` silently restarted at zero on every resume. A ceiling that quietly
+stops applying is worse than no ceiling, so check the version before relying on
+one.
 
 ---
 
