@@ -11,21 +11,17 @@ description: >
 
 provider: openrouter
 
-# `model:` duplicates `model_tiers[initial]` and `jaato-scaffold validate` will
-# tell you it is ignored. It is still required, for a reason the warning does
-# not know about: several places derive "the session's model" independently.
-# PR #575 unified two of them (the bootstrap gate and the runner spawn
-# envelope), but `JaatoServer.model_name` is still assigned from
-# `profile.model` alone (core.py ~1947). Tiers-only therefore leaves it None,
-# and session creation dies building its SessionInfoEvent:
+# No top-level `model:`. With `model_tiers` declared it would be dead config —
+# the active model is chosen per turn from `model_tiers[<active_tier>]`, and
+# `jaato-scaffold validate` warns that a `model` key here is ignored.
 #
-#   ValidationError: 1 validation error for SessionInfoEvent
-#   model_name  ... string_type
-#
-# which reaches the driver only as a dropped connection and "spawn refused".
-# Keep this equal to the `initial` tier so the two never disagree.
-# Reported upstream; delete once that third derivation is unified too.
-model: anthropic/claude-sonnet-4.5
+# Needs jaato-server >= PR #576, where every producer of "the session's model"
+# goes through one `bound_model_for_profile()`. Older servers derive it
+# independently in several places, so a tiers-only profile fails differently
+# depending on version — and mostly not in a way that names the cause:
+# "Missing required environment variables", "envelope.model_name is empty", or
+# a SessionInfoEvent validation error that reaches the client only as a dropped
+# connection and "spawn refused".
 #
 # The brownout ladder's rungs. The driver's cascade budget declares a rung that
 # REBINDS `planner` to the cheap model once the goal has burned 80 % of any
@@ -55,7 +51,14 @@ plugins:
   # for the same reason as the two above: an eagerly-offered tool gets called,
   # a discovery-gated one may not.
   - environment(preload)
-  - filesystem_query
+  # Preloaded because the agent otherwise has NO eager way to see what is
+  # around it: readFile needs a path you already know, and glob_files is
+  # discovery-gated by default, which a small model may never go looking for.
+  # An agent that cannot look guesses, and the guess costs a turn. glob_files
+  # runs in-process, so it stays available under confinement too — see the
+  # swe-bench example, where the shell is scoped to sh/python3/git and `ls`
+  # comes back as exit 126.
+  - filesystem_query(preload)
 
 plugin_configs:
   openrouter:
@@ -68,6 +71,9 @@ plugin_configs:
     # is resolved daemon-side. Point it at the SECRET, not its folder:
     # `pass show` on a directory prints a tree listing, which passes through
     # as a short nonsense key and 401s with "Missing Authentication header".
+    # >>> LOCAL-ONLY DEVIATION — DO NOT COMMIT <<<
+    # Shipped value is "${JAATO_OPENROUTER_API_KEY}"; committed as such.
+    # Guarded with: git update-index --skip-worktree <this file>
     api_key: "${JAATO_OPENROUTER_API_KEY}"
   permission:
     policy:
