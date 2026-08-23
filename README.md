@@ -167,30 +167,36 @@ degrade=[
 them — a ceiling that only cancelled one turn could be talked past.
 
 A separate path bounds *admission*: a spawn into a cascade whose pot is dry is
-refused outright rather than started and killed, and the driver exits `2` for
-that case so automation can tell "stopped at the ceiling" from "broke".
+refused outright rather than started and killed.
 
-**A mid-flight ceiling stop currently exits `1`, not `2`.** When a rung aborts a
-running session, the refusal reaches a `session.wake`-driven client as prose and
-a log line — there is no terminal event and no typed reason to branch on. The
-driver reports and exits non-zero, but cannot yet say *why*. Distinguishing it
-would mean substring-matching the daemon's output, which is worse than the
-honest ambiguity. Reported upstream; this paragraph goes when a typed signal
-lands.
+**Either way the driver exits `2`, never `0` or `1`** — a run stopped by its
+ceiling is not a run that broke, and automation has to be able to tell them
+apart. Both cases are branched on a typed field rather than matched against the
+daemon's prose: an admission refusal carries
+`error_type="CascadeExhaustedError"`, and a mid-flight abort arrives as
+`SessionTerminatedEvent(reason="budget_exhausted")` with the usage that tripped
+it. So the driver can say not just that it stopped, but why:
+
+```
+[stopped] budget_exhausted (self-enforced: turns 100%, usd 21%, seconds 1%)
+          — usage {'usd': 0.213, 'tokens': 203483, 'seconds': 26.4,
+                   'tool_calls': 9.0, 'turns': 2.0}
+```
 
 **`turns` is a turn counter, not a resume count.** One resume cycle usually
 costs several turns (inspect → act → signal). The driver *reports* its resume
 count; the budget *enforces* the ceiling. They are not the same number.
 
-**Counting across suspends needs jaato-server ≥ `6261b10e`.** A suspended
-session is unloaded — jaato evicts on orphan, and a driver holding the clock is
-orphaned during every wait — so accumulated usage has to survive a reload for a
-cross-turn ceiling to mean anything. Before that commit it did not, and the
-dimensions that bound *long* goals were exactly the ones that reset: `usd` still
-worked, because it can be crossed inside a single turn, while `turns` and
-`seconds` silently restarted at zero on every resume. A ceiling that quietly
-stops applying is worse than no ceiling, so check the version before relying on
-one.
+**A ceiling has to survive the suspend, and that needs jaato-server ≥
+`47724aea`.** A suspended session is unloaded — jaato evicts on orphan, and a
+driver holding the clock is orphaned during every wait — so both the
+accumulated usage and the exhausted latch have to be persisted and restored, or
+the ceiling quietly stops applying at the first resume. Older servers lose one
+or both, and the failure is silent in a particular way: `usd` keeps working,
+because it can be crossed inside a single turn, while `turns` and `seconds`
+restart at zero on every resume. The dimensions that bound *long* goals are
+exactly the ones that reset. Check the version rather than assume it — a
+ceiling that silently stops applying is worse than no ceiling.
 
 ---
 

@@ -170,3 +170,67 @@ def test_budget_exhausted_spawn_exits_two_not_one(tmp_path):
 def test_other_spawn_refusals_still_exit_one(tmp_path):
     """Exit 2 means the ceiling specifically, not any refused spawn."""
     assert _run_refused_spawn(tmp_path, "ConfigurationError") == 1
+
+
+class _FakeTerminated:
+    """Stand-in for SessionTerminatedEvent."""
+
+    def __init__(self, reason: str, details=None) -> None:
+        self.reason = reason
+        self.details = details
+
+
+def _arm_and_fire(tmp_path, event):
+    """Arm the completion waiter, fire one SESSION_TERMINATED event, return payload.
+
+    Routes by event type the way the real client does. An earlier version of
+    this helper handed the event to every handler, so a termination also
+    reached the AGENT_COMPLETED handler and was captured as a completion —
+    the test failed for a reason that had nothing to do with the code.
+    """
+    from jaato_sdk import EventType
+
+    cascade = _cascade(tmp_path)
+    handlers = {}
+
+    class _C:
+        def subscribe(self, event_type, h):
+            handlers.setdefault(event_type, []).append(h)
+            return lambda: None
+
+        subscribe_once = subscribe
+
+    wait = cascade._arm_completion(_C())
+    for h in handlers.get(EventType.SESSION_TERMINATED, []):
+        h(event)
+    return asyncio.run(wait(timeout=0.2))
+
+
+def test_ceiling_stop_is_distinguished_from_a_failure(tmp_path):
+    """A budget stop must not look like a broken goal (invariant 7).
+
+    `reason` is a typed field on the terminal event, so this is a branch on a
+    value rather than a match against the daemon's prose. Before the daemon
+    emitted it, a mid-flight ceiling reached the driver as output text only —
+    it waited out its timeout and could not say why it stopped.
+    """
+    payload = _arm_and_fire(tmp_path, _FakeTerminated(
+        "budget_exhausted",
+        {"reason": "turns 100%", "usage": {"turns": 2.0}},
+    ))
+    assert payload["_ceiling"] == "turns 100%"
+    assert payload["_usage"] == {"turns": 2.0}
+
+
+def test_a_real_failure_is_not_mistaken_for_the_ceiling(tmp_path):
+    """Only the ceiling reason maps to the ceiling; everything else fails."""
+    payload = _arm_and_fire(tmp_path, _FakeTerminated("error"))
+    assert "_ceiling" not in payload
+    assert payload["_failure"] == "error"
+
+
+def test_a_natural_unload_is_neither(tmp_path):
+    """The expected between-turns unload must not end the wait at all."""
+    payload = _arm_and_fire(tmp_path, _FakeTerminated("natural"))
+    assert "_ceiling" not in payload
+    assert "_failure" in payload and "within" in payload["_failure"]

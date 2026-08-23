@@ -52,6 +52,12 @@ MAX_SLEEP_SECONDS = 3600.0
 # driver forever.
 TURN_TIMEOUT_SECONDS = 300.0
 
+# ``SessionTerminatedEvent.reason`` when a degrade rung's terminal action stops
+# the session at its ceiling. A typed value, not a log string: distinguishing
+# "stopped at the ceiling" from "broke" is what exit code 2 is for, and doing it
+# by matching the daemon's prose would be a guess dressed as a check.
+CEILING_REASON = "budget_exhausted"
+
 
 class GoalCascade:
     """Drives one goal to completion across an arbitrary number of suspends.
@@ -219,8 +225,22 @@ class GoalCascade:
             # would turn every healthy suspend into an error. A real failure
             # arrives as AGENT_ERROR, or as a termination whose reason is
             # something other than "natural" (carrying `error_summary`).
-            if getattr(event, "reason", None) == "natural":
+            reason = getattr(event, "reason", None)
+            if reason == "natural":
                 return
+
+            if reason == CEILING_REASON:
+                # The ceiling stopped the goal. That is the operator's limit
+                # working, not the goal breaking, and the two must not exit
+                # alike. `reason` is a typed field — branching on it is what
+                # makes this expressible at all; before the daemon emitted
+                # this event the refusal arrived as prose, and the driver
+                # simply waited out its timeout knowing nothing.
+                details = getattr(event, "details", None) or {}
+                captured["_ceiling"] = (
+                    details.get("reason") or "cascade budget exhausted"
+                )
+                captured["_usage"] = details.get("usage") or {}
             captured["_failure"] = (
                 getattr(event, "error", None)
                 or getattr(event, "error_summary", None)
@@ -409,6 +429,12 @@ class GoalCascade:
 
             while True:
                 payload = await wait_for_turn()
+
+                ceiling = payload.get("_ceiling")
+                if ceiling:
+                    raise BudgetExhausted(
+                        f"{ceiling} — usage {payload.get('_usage') or {}}"
+                    )
 
                 failure = payload.get("_failure")
                 if failure:
