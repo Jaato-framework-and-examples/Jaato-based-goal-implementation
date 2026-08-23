@@ -2,8 +2,11 @@
 .venv/
 __pycache__/
 *.pyc
-.jaato/logs/
-.jaato/sessions/
+# Anchored patterns (a leading path segment with a slash) only match at the
+# repo root, so runtime state under examples/*/.jaato/ needs the ** form.
+**/.jaato/logs/
+**/.jaato/sessions/
+**/.jaato/.artifact_tracker.json
 .goal-cascade-state/
 build/
 dist/
@@ -11,3 +14,20 @@ dist/
 fixtures/.job-status.json
 .jaato/.artifact_tracker.json
 REPORT.md
+# …except the one run committed on purpose, as a worked example.
+!examples/swe-bench/sample-run/REPORT.md
+examples/swe-bench/repo/
+examples/swe-bench/upstream/
+examples/swe-bench/instance.json
+examples/swe-bench/test_patch.diff
+examples/swe-bench/fix.diff
+examples/swe-bench/logs/
+examples/swe-bench/.jaato/apparmor-fragments/*.rules.local
+examples/swe-bench/.env
+examples/swe-bench/fixtures/.test-*
+# The example's directory is the agent's workspace, so a run leaves scratch
+# behind (helper scripts, probes). Track only what the example ships.
+examples/swe-bench/*.py.bak
+examples/swe-bench/test_*.py
+examples/swe-bench/*.sh
+examples/swe-bench/receipts/

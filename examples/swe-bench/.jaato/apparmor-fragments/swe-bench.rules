@@ -1,0 +1,48 @@
+# Exec authority for this example's agent, inside the //child subprofile.
+#
+# Since template v18 the broad `/usr/bin/** ix` grant is INTENTIONALLY absent
+# from //child — the agent-controlled exec context. Fragments are the sole
+# source of exec authority there, so a workload declares the binaries it needs
+# and gets nothing else. A fragment-less profile can exec nothing at all, which
+# is the correct default and is what this example hit first: the agent tried to
+# run its test suite, was refused, and suspended asking for the environment to
+# be fixed.
+#
+# The point of the mechanism is that this list is short and readable. Everything
+# here is something the goal genuinely requires:
+#
+#   sh          `run_tests.py` spawns the suite via `sh -c`
+#   python3     runs pytest, and the fixture itself
+#   git         the agent produces its patch with `git diff`
+#
+# Note what is NOT here: no curl, no package managers, no editors. If this agent
+# improvised its way to a network fetch it would be denied, and that scoping is
+# only real because the broad rule is gone.
+#
+# Operator-authored by design: the profile template denies the agent write
+# access to this directory, so a confined session cannot grant itself exec
+# rights for the next one.
+
+# The shell used to spawn the suite. On Debian/Ubuntu /bin/sh is dash, and
+# /bin is a symlink to /usr/bin — declare the resolved path as well, since
+# AppArmor matches on the resolved one.
+/bin/sh              ix,
+/usr/bin/sh          ix,
+/usr/bin/dash        ix,
+/bin/dash            ix,
+
+# The interpreter. Version-globbed rather than pinned: the example states a
+# 3.12 requirement, but a reader on 3.11 or 3.13 should not have to edit an
+# AppArmor rule to find that out.
+/usr/bin/python3     ix,
+/usr/bin/python3.*   ix,
+/usr/local/bin/python3    ix,
+/usr/local/bin/python3.*  ix,
+
+# Producing the patch is part of the goal: `cd repo && git diff > ../fix.diff`.
+/usr/bin/git         ix,
+/usr/lib/git-core/** ix,
+
+# pytest shells out to nothing here, but the stdlib's subprocess machinery and
+# sympy's own imports touch these; they are reads, not exec authority.
+/usr/bin/uname       ix,

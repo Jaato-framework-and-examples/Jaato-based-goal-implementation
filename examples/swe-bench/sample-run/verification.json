@@ -1,0 +1,24 @@
+{
+  "patch_path": "fix.diff",
+  "base_commit": "193e3825645d93c73e31cdceb6d742cc6919624d",
+  "touched_paths": [
+    "sympy/polys/rings.py"
+  ],
+  "touched_tests": [],
+  "file_notes": [
+    {
+      "path": "sympy/polys/rings.py",
+      "why": "Fixed the bug in PolyElement.as_expr() method at line 621. Changed `else:` to `elif not symbols:` to properly handle the case when symbols are provided. The original code always overwrote the provided symbols with self.ring.symbols because the else clause executed even when valid symbols were passed. The fix ensures that: (1) if wrong number of symbols provided, raise ValueError; (2) if no symbols provided, use self.ring.symbols as default; (3) if correct number of symbols provided, use those symbols. This makes the method actually respect the symbols parameter as intended."
+    }
+  ],
+  "with_agents_tests": {
+    "exit_code": 0,
+    "summary": "855 passed, 3 xfailed, 1383 warnings in 114.56s (0:01:54)"
+  },
+  "with_project_tests": {
+    "exit_code": 0,
+    "summary": "855 passed, 3 xfailed, 1383 warnings in 107.84s (0:01:47)",
+    "failed": []
+  },
+  "needs_human_review": false
+}
