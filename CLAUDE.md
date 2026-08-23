@@ -14,12 +14,24 @@ probably the wrong change.
 
 ## Current state — read this before planning work
 
-**The loop has never been run end-to-end against a live daemon.** The unit tests
-pass (15, daemon faked out) and the profile validates clean against the live
-registry, but no real model has ever driven a suspend/resume cycle. Treat the
-first live run as the top priority and expect to find bugs there.
+**The loop runs end-to-end against a live daemon.** Both examples have been
+driven to `EXIT=0` by a real model across real suspends, and the ceiling path
+has been exercised too (`turns: 2` refuses a third turn across a suspend and
+exits 2). 23 tests pass with the daemon faked out.
 
-Everything else is committed and pushed to `main`.
+A second example lives in `examples/swe-bench/` — the same driver against a
+real SWE-bench Verified instance, under AppArmor confinement, with the driver
+verifying the agent's patch against a pristine checkout rather than trusting
+its report. One complete run is committed at
+`examples/swe-bench/sample-run/` for readers without a daemon.
+
+What the live runs cost, and what they taught, is recorded where the decision
+lives rather than here — see the comments in `.jaato/profiles/goal-actor.yaml`
+(why `filesystem_query` is preloaded) and `examples/swe-bench/setup.py` (why
+every run resets the workspace first). The short version: three rounds of
+persona prose failed to fix a path-guessing bug that one preloaded tool fixed
+immediately. Prefer giving the agent a capability over describing the world
+to it.
 
 ## Verifying a change
 
@@ -27,7 +39,7 @@ Everything else is committed and pushed to `main`.
 python3 -m venv .venv
 .venv/bin/pip install -e . jaato-sdk jaato-server pytest
 
-.venv/bin/python -m pytest                                    # 15 tests, no daemon needed
+.venv/bin/python -m pytest                                    # 23 tests, no daemon needed
 .venv/bin/jaato-scaffold validate .jaato/profiles/goal-actor.yaml   # exit 0 = clean
 .venv/bin/jaato-doctor --workspace . --env-file .env          # preflight before a live run
 ```

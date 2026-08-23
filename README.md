@@ -216,6 +216,39 @@ ceiling that silently stops applying is worse than no ceiling.
   nobody is present to answer a prompt. A real deployment gates a goal actor
   like any other agent.
 
+## A harder example, and a tool for asking questions
+
+The example above waits on a fixture that sleeps. Everything the pattern
+actually has to survive — an unfamiliar codebase, a fix that might break
+something else, a report that might not be true — is exercised by a second
+example instead.
+
+**[`examples/swe-bench/`](examples/swe-bench/)** runs the same driver against a
+real [SWE-bench Verified](https://www.swebench.com/) instance. The agent gets
+its own checkout with the project's failing test already applied, and it may
+edit anything in it, tests included. What it may *not* do is be believed: the
+driver applies its patch to a pristine second checkout and runs the suite twice
+— once with the agent's tests as it left them, once with the project's tests
+restored — and a `finished` claim that does not survive that is refused, which
+suspends the agent and sends it back to work. Its session is confined by
+AppArmor to the binaries the goal needs, so "run the tests" cannot become "run
+anything". One complete run is committed at
+[`examples/swe-bench/sample-run/`](examples/swe-bench/sample-run/) — transcript,
+report and receipt — for reading without a daemon.
+
+**[`tools/interrogate/`](tools/interrogate/)** wakes a session whose goal is
+already finished and asks it a question in prose. Two findings in this repo
+came from it and could not have come from anywhere else: why a run's report
+quoted code that had never been in the file, and what a confined workspace
+actually does when the agent inside it tries to use a shell. Its
+[transcripts](tools/interrogate/transcripts/) are worth reading before trusting
+your own reasoning about what an agent did.
+
+**[`tools/dump_turns.py`](tools/dump_turns.py)** renders any session's history
+as readable turns. The driver prints outcomes; the transcript shows the calls
+that produced them, and the two can disagree — a run can exit 0 having wasted
+three calls on a wrong assumption, and only the transcript says so.
+
 ## Tests
 
 ```bash

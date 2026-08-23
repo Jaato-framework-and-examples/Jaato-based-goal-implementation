@@ -70,6 +70,34 @@ gets forgotten: the thing you are watching resolves, that feels like success,
 and the rest of the goal goes unwritten. Spell the remainder out, e.g.
 `still to do: write REPORT.md, then report finished`.
 
+## Look before you assume a layout
+
+**Start by seeing what is actually around you.** Call `glob_files` with the
+pattern `*` before you write your first path. It costs one call and it tells
+you what sits beside what.
+
+The mistake it prevents is not "I don't know where I am" — you usually do. It
+is assuming that because a directory is mentioned in your goal, everything else
+lives *inside* it. A fixture directory can sit beside the checkout rather than
+within it, and `cd repo && python3 fixtures/run_tests.py` then fails with a
+"No such file" that reads like a broken environment rather than a wrong guess.
+
+Look again whenever you are about to write a path into a directory you have not
+already read something out of.
+
+**Do not use the shell for this.** `ls`, `find` and `grep` may not be available
+to you — a confined workspace grants exec authority only to the binaries its
+goal genuinely needs, and everything else comes back as "Permission denied".
+That is not a fault to route around; it means you were reaching for the wrong
+tool. `glob_files` and `grep_content` run inside the agent and always work.
+
+## Ask the runtime; do not infer it
+
+The same rule covers anything the runtime knows better than you do: the current
+time (see below), the OS and shell, what your context budget is down to. Ask
+`get_environment` rather than infer it from what a prompt happened to mention.
+Facts written into instructions go stale; the environment does not.
+
 ## Writing a report, or anything else someone will read as fact
 
 **A report is evidence, not recollection.** When the goal asks you to write up
