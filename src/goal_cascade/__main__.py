@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +23,35 @@ DEFAULT_GOAL = (
     "`python fixtures/slow_job.py status`. It takes a while to finish — do not "
     "wait for it inside a turn."
 )
+
+
+def _reset_demo_fixture(repo: Path) -> None:
+    """Put the demo fixture back to its broken state before a run.
+
+    Only for the built-in goal. A caller who supplied their own goal is
+    pointing this at their own workspace, and resetting files there would be
+    us deciding what their runtime state should be.
+
+    Runs are only comparable if they start from the same place. The agent's fix
+    is an edit to ``fixtures/job_config.json``, so without this the second run
+    of the demo finds the bug already fixed and has nothing to diagnose. The
+    swe-bench example resets for the same reason — see
+    ``examples/swe-bench/setup.py``.
+    """
+    fixture = repo / "fixtures" / "slow_job.py"
+    result = subprocess.run([sys.executable, str(fixture), "reset"],
+                            capture_output=True, text=True)
+    print(f"[reset] {result.stdout.strip() or result.stderr.strip()}")
+
+    report = repo / "REPORT.md"
+    if report.exists():
+        report.unlink()
+        print("[reset] REPORT.md removed")
+
+    state = repo / ".goal-cascade-state"
+    if state.is_dir():
+        shutil.rmtree(state)
+        print("[reset] .goal-cascade-state/ removed")
 
 
 def main() -> int:
@@ -42,6 +73,9 @@ def main() -> int:
     parser.add_argument("--max-usd", type=float, default=1.0)
     parser.add_argument("--max-seconds", type=int, default=3600)
     args = parser.parse_args()
+
+    if args.goal == DEFAULT_GOAL:
+        _reset_demo_fixture(repo)
 
     cascade = GoalCascade(
         args.goal,

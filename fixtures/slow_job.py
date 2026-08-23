@@ -28,6 +28,7 @@ from pathlib import Path
 STATE = Path(__file__).parent / ".job-status.json"
 DURATION = float(os.environ.get("JOB_DURATION_SECONDS", "90"))
 CONFIG = Path(__file__).parent / "job_config.json"
+PRISTINE = Path(__file__).parent / "job_config.default.json"
 
 
 def _read() -> dict:
@@ -95,9 +96,18 @@ def status() -> int:
 
 
 def reset() -> int:
-    """Clear job state so the demo can be run again from scratch."""
+    """Restore the fixture to its broken starting state.
+
+    Clearing the run state is not enough. The agent's fix IS an edit to
+    ``job_config.json`` — that is the goal — so a run that succeeded left
+    ``retries`` at 2 and the next run found the bug already fixed, with nothing
+    to diagnose. The config is therefore generated here from
+    ``job_config.default.json`` rather than tracked, so no run can leave the
+    checkout dirty or the demo pre-solved.
+    """
     STATE.unlink(missing_ok=True)
-    print("reset")
+    CONFIG.write_text(PRISTINE.read_text(encoding="utf-8"), encoding="utf-8")
+    print("reset: job state cleared, job_config.json restored to retries=0")
     return 0
 
 

@@ -12,6 +12,10 @@ build/
 dist/
 *.egg-info/
 fixtures/.job-status.json
+# Written from job_config.default.json before every run, and edited BY the
+# agent — the fix it makes is the goal. Tracking it meant each run left the
+# bug already fixed for the next one.
+fixtures/job_config.json
 .jaato/.artifact_tracker.json
 REPORT.md
 # …except the one run committed on purpose, as a worked example.
