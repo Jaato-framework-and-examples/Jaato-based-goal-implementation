@@ -92,7 +92,26 @@ def _validate_suspended(payload: Dict[str, Any]) -> List[str]:
 
 
 def _validate_finished(payload: Dict[str, Any], workspace: Path) -> List[str]:
-    """'Finished' is a claim about the world; check the world, not the claim."""
+    """Catch a `finished` claim the agent's own records contradict.
+
+    Note carefully what this is NOT. It reads files inside the workspace the
+    agent edits, from a hook that runs on the agent's turn-exit path, in the
+    agent's session. Any one of those disqualifies it as a trust boundary, and
+    all three apply: with `defaultPolicy: allow` and `cli` the agent can write
+    whatever this reads. Demonstrated rather than argued — hand-writing a
+    two-line `{"status": "passed"}` file was enough to make this function
+    accept a finish over a failing suite.
+
+    So it is a MISTAKE-CATCHER, not a guard. It catches an agent that forgot
+    the report, or claimed done while the job was still running, or stopped
+    reading its own status file — the ordinary ways a turn goes wrong. It
+    catches nothing from an agent with a reason to lie.
+
+    Deciding against an adversary needs a different principal: the driver's
+    `verify_finished` hook, reading a record the agent cannot write, with the
+    runner under `apparmor: true` so "cannot write" is kernel policy rather
+    than convention.
+    """
     errors: List[str] = []
 
     if not payload.get("result"):

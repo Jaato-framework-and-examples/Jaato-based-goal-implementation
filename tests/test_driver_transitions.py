@@ -234,3 +234,68 @@ def test_a_natural_unload_is_neither(tmp_path):
     payload = _arm_and_fire(tmp_path, _FakeTerminated("natural"))
     assert "_ceiling" not in payload
     assert "_failure" in payload and "within" in payload["_failure"]
+
+
+def _run_finish(tmp_path, verifier):
+    """Drive run() to a `finished` completion and return the exit code."""
+    cascade = _cascade(tmp_path)
+    cascade.verify_finished = verifier
+    handlers = {}
+
+    class _C:
+        def subscribe(self, event_type, h):
+            handlers.setdefault(event_type, []).append(h)
+            return lambda: None
+
+        subscribe_once = subscribe
+
+        async def connect(self, timeout: float = 0.0):
+            return True
+
+        async def cascade_budget_set(self, *a, **kw):
+            return None
+
+        async def create_session(self, **kw):
+            return "s1"
+
+        async def send_message(self, *a, **kw):
+            from jaato_sdk import EventType
+
+            class _Done:
+                payload = {"outcome": "finished", "progress_note": "n",
+                           "result": {"ok": 1}}
+                success = True
+
+            for h in handlers.get(EventType.AGENT_COMPLETED, []):
+                h(_Done())
+
+        async def disconnect(self):
+            return None
+
+    client = _C()
+    cascade._new_client = lambda: client
+
+    async def _no_refusal(_c, **_kw):
+        return None
+
+    cascade._budget_refusal = _no_refusal
+    return asyncio.run(cascade.run())
+
+
+def test_an_unproven_finish_is_refused(tmp_path):
+    """The driver, not the agent, decides whether a finish is believable.
+
+    A completion processor cannot make this call: it runs on the agent's
+    turn-exit path, in the agent's session, over the workspace the agent
+    edits. Forging this example's own status file took two lines.
+    """
+    assert _run_finish(tmp_path, lambda: "no execution receipt") == 1
+
+
+def test_a_proven_finish_is_accepted(tmp_path):
+    assert _run_finish(tmp_path, lambda: None) == 0
+
+
+def test_no_verifier_means_the_agents_word_stands(tmp_path):
+    """The default is unchanged — verification is opt-in for the operator."""
+    assert _run_finish(tmp_path, None) == 0

@@ -80,6 +80,7 @@ class GoalCascade:
         state_path: str = ".goal-cascade-state/due.json",
         budget: Optional[Dict[str, float]] = None,
         degrade: Optional[list] = None,
+        verify_finished: Optional[Callable[[], Optional[str]]] = None,
         log: Callable[[str], None] = print,
     ) -> None:
         self.goal = goal
@@ -90,6 +91,7 @@ class GoalCascade:
         self.agent = agent
         self.budget = budget or {"turns": 40, "usd": 1.0, "seconds": 3600}
         self.degrade = degrade
+        self.verify_finished = verify_finished
         self.log = log
         self.store = GoalStore(Path(workspace) / state_path)
         self.cascade_id = uuid.uuid4().hex
@@ -376,6 +378,35 @@ class GoalCascade:
         )
         return True
 
+    def _reject_unproven_finish(self) -> Optional[str]:
+        """Ask the operator's verifier whether the finish is believable.
+
+        Returns a reason to refuse, or ``None`` to accept. With no verifier
+        configured the agent's word stands, which is the example's default.
+
+        **Why this lives in the driver and not in a completion processor.** A
+        completion processor runs on the agent's turn-exit path, inside the
+        agent's session, against the workspace the agent edits. Any one of
+        those disqualifies it as a trust boundary: a profile with
+        ``defaultPolicy: allow`` and ``cli`` gives the agent arbitrary code
+        execution as that uid, so no in-workspace artifact — however signed —
+        is evidence about the world. Demonstrated, not assumed: writing a
+        two-line ``passed`` status file by hand was enough to make this
+        example's own processor accept a ``finished`` claim over a failing
+        suite.
+
+        The driver is the one party already outside that blast radius. It owns
+        the clock and the ceiling; owning final acceptance is the same kind of
+        thing, and it is a relocation rather than a new mechanism.
+
+        Deliberately generic: the driver still does not know what "done" means
+        for any particular goal. It knows only that the operator may hold
+        evidence it should consult before believing one.
+        """
+        if self.verify_finished is None:
+            return None
+        return self.verify_finished()
+
     # ----------------------------------------------------------------- entry
 
     async def run(self) -> int:
@@ -444,6 +475,10 @@ class GoalCascade:
                 outcome = payload.get("outcome")
 
                 if outcome == "finished":
+                    refusal = self._reject_unproven_finish()
+                    if refusal is not None:
+                        self.log(f"[error] refusing the finish: {refusal}")
+                        return 1
                     self.store.drop(self.session_id)
                     self.log(f"[finished] {payload.get('progress_note', '')}")
                     self.log(f"[result] {payload.get('result')}")
