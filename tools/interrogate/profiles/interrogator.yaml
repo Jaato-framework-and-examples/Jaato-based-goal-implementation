@@ -1,0 +1,89 @@
+# A profile for sessions you intend to QUESTION, not only to drive.
+#
+# `session.wake` revives a session under the profile it was created with, so an
+# interrogator cannot impose a contract after the fact. If you know in advance
+# that you will want to ask a session what it did — and for anything you are
+# evaluating rather than merely running, you probably do — create it under this
+# and the answering turn costs nothing.
+#
+# The difference from a goal profile is entirely in the completion contract:
+# `finished` asks for an answer and nothing else. No patch, no report, no
+# artifact on disk. A session created under a goal profile CAN still be
+# interrogated — ask it to end the turn `suspended`, which is what the question
+# template in this directory does — it is just noisier, because the session
+# answers and then argues with a processor about a patch the question never
+# involved.
+name: interrogator
+description: >
+  Answers questions about work it has already done. Woken by an operator rather
+  than driven toward a goal; its turns produce explanations, not artifacts.
+
+provider: openrouter
+
+model_tiers:
+  planner: anthropic/claude-sonnet-4.5
+  initial: planner
+
+plugins:
+  # Reading and running things is the point: a question worth asking is usually
+  # one the session must go and CHECK rather than recall. The interrogation that
+  # justified this file asked a session why its report quoted code that was
+  # never in the file, and the useful half of the answer came from it re-reading
+  # the file rather than from its memory of it.
+  - cli(preload)
+  - file_edit(preload)
+  - environment(preload)
+  - filesystem_query
+
+plugin_configs:
+  openrouter:
+    api_key: "${JAATO_OPENROUTER_API_KEY}"
+  permission:
+    policy:
+      defaultPolicy: allow
+
+gc:
+  type: budget
+  threshold_percent: 75.0
+
+# Answering is the whole exit. `finished` carries the answer; `suspended` exists
+# because a question may need something slow to be re-run before it can be
+# answered honestly, and a session that must wait should still say so rather
+# than guess.
+completion_payload_schema:
+  type: object
+  additionalProperties: false
+  required:
+    - outcome
+    - progress_note
+  properties:
+    outcome:
+      type: string
+      enum: [finished, suspended]
+      description: >
+        `finished` when you have answered. `suspended` when answering requires
+        waiting for something outside your control.
+    progress_note:
+      type: string
+      description: >
+        Your answer, or — if suspending — what you have established so far and
+        what remains. Replayed back to you verbatim on resume.
+    answer:
+      type: object
+      description: >
+        Optional structure for the answer, when the question asked for
+        specifics. Free-form: the question decides the shape.
+      additionalProperties: true
+    resume_at:
+      type: string
+      description: ISO-8601 UTC instant. Required when outcome is `suspended`.
+    resume_reason:
+      type: string
+      description: What you are waiting for. Required when outcome is `suspended`.
+    watch_handle:
+      type: object
+      description: What to re-inspect on resume. Required when `suspended`.
+      additionalProperties: true
+    errors:
+      type: array
+      items: { type: string }
