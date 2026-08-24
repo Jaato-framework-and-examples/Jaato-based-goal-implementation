@@ -431,9 +431,23 @@ index 12bd2fc..be6e35d 100644
 One row per turn the driver drove — the first, plus one per
 resume. Tokens are per turn, not cumulative.
 
-| turn | calls | tools | prompt | output | seconds |
-|---|---|---|---|---|---|
-| 0 | 12 | `get_environment`, `glob_files`, `readFile`, `grep_content`, `cli_based_tool`, `updateFile`, `signal_completion` | 40708 | 357 | 71 |
-| 1 | 3 | `cli_based_tool`, `get_environment`, `signal_completion` | 39423 | 309 | 14 |
-| 2 | 5 | `cli_based_tool`, `readFile`, `writeNewFile`, `signal_completion` | 42790 | 458 | 34 |
+| turn | calls | tools | prompt | cached | output | seconds |
+|---|---|---|---|---|---|---|
+| 0 | 12 | `get_environment`, `glob_files`, `readFile`, `grep_content`, `cli_based_tool`, `updateFile`, `signal_completion` | 40708 | 22072 | 357 | 71 |
+| 1 | 3 | `cli_based_tool`, `get_environment`, `signal_completion` | 39423 | 22072 | 309 | 14 |
+| 2 | 5 | `cli_based_tool`, `readFile`, `writeNewFile`, `signal_completion` | 42790 | 22072 | 458 | 34 |
+
+---
+
+## Cost
+
+| dimension | used | ceiling | consumed |
+|---|---|---|---|
+| usd | 1.1343 | 2.50 | 45% |
+| turns | 3 | 30 | 10% |
+| seconds | 120 | 3,600 | 3% |
+| tokens | 713,244 | — | — |
+| tool_calls | 20 | — | — |
+
+The ceiling was never reached.
 

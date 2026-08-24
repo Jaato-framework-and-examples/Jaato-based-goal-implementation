@@ -257,17 +257,34 @@ python tools/dump_turns.py .jaato/sessions/<id>.json > transcript.md
 is what it produces — one real run, every call and result, ending in a summary
 of where the turns went:
 
-| turn | calls | tools | prompt | output | seconds |
-|---|---|---|---|---|---|
-| 0 | 12 | `get_environment`, `glob_files`, `readFile`, `grep_content`, `cli_based_tool`, `updateFile`, `signal_completion` | 40708 | 357 | 71 |
-| 1 | 3 | `cli_based_tool`, `get_environment`, `signal_completion` | 39423 | 309 | 14 |
-| 2 | 5 | `cli_based_tool`, `readFile`, `writeNewFile`, `signal_completion` | 42790 | 458 | 34 |
+| turn | calls | tools | prompt | cached | output | seconds |
+|---|---|---|---|---|---|---|
+| 0 | 12 | `get_environment`, `glob_files`, `readFile`, `grep_content`, `cli_based_tool`, `updateFile`, `signal_completion` | 40708 | 22072 | 357 | 71 |
+| 1 | 3 | `cli_based_tool`, `get_environment`, `signal_completion` | 39423 | 22072 | 309 | 14 |
+| 2 | 5 | `cli_based_tool`, `readFile`, `writeNewFile`, `signal_completion` | 42790 | 22072 | 458 | 34 |
 
 Three rows for three driven turns — the first, then one per resume — against 19
 model steps. The tool ordering in turn 0 is the whole argument for preloading
 `filesystem_query`: it asks the clock, lists the workspace, and only then reads
 a file. Four earlier runs had no `glob_files` to call and every one of them
 guessed a path wrong instead.
+
+It closes with what the run cost, against the ceiling the budget enforces:
+
+| dimension | used | ceiling | consumed |
+|---|---|---|---|
+| usd | 1.1343 | 2.50 | 45% |
+| turns | 3 | 30 | 10% |
+| seconds | 120 | 3,600 | 3% |
+| tokens | 713,244 | — | — |
+| tool_calls | 20 | — | — |
+
+Cost is recorded per session, not per turn — so this is what the budget counted,
+never a figure inferred from a price table. `tokens` exceeds what the table
+above sums to because the budget counts every model call, while the table has
+one row per driven turn: a turn making twelve tool calls bills a prompt each
+time round the loop. On a run stopped by the ceiling, the last line names the
+dimension that stopped it.
 
 ## Tests
 

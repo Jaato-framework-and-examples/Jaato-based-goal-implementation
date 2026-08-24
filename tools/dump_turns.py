@@ -66,6 +66,46 @@ def _tool_names(row: dict) -> str:
     return ", ".join(f"`{n}`" for n in seen) or "—"
 
 
+
+def _cost(data: dict) -> list:
+    """What the run spent, against the ceiling the budget enforces.
+
+    Cost is recorded per SESSION, not per turn: ``turn_accounting`` rows carry
+    tokens and duration but no USD. Deriving a per-turn figure would need a
+    price table per model, which goes stale and cannot account for a degrade
+    rung rebinding the tier mid-run — so this reports what the budget itself
+    counted and nothing inferred.
+
+    ``tokens`` here is larger than the per-turn table sums to, because the
+    budget counts every model call while the table has one row per DRIVEN turn.
+    A turn that makes twelve tool calls bills a prompt each time round the
+    loop.
+    """
+    usage = data.get("budget_usage") or {}
+    if not usage:
+        return []
+    limits = (data.get("budget_control") or {}).get("limits") or {}
+    rows = ["---", "", "## Cost", "",
+            "| dimension | used | ceiling | consumed |",
+            "|---|---|---|---|"]
+    for key in ("usd", "turns", "seconds", "tokens", "tool_calls"):
+        if key not in usage:
+            continue
+        used = usage[key]
+        cap = limits.get(key)
+        shown = f"{used:,.4f}" if key == "usd" else f"{used:,.0f}"
+        if cap:
+            cap_shown = f"{cap:,.2f}" if key == "usd" else f"{cap:,.0f}"
+            rows.append(f"| {key} | {shown} | {cap_shown} "
+                        f"| {used / cap * 100:.0f}% |")
+        else:
+            rows.append(f"| {key} | {shown} | — | — |")
+    reason = data.get("budget_exhausted_reason")
+    rows += ["", f"Stopped by the ceiling: `{reason}`." if reason
+             else "The ceiling was never reached.", ""]
+    return rows
+
+
 def render(session: Path) -> str:
     data = json.loads(session.read_text(encoding="utf-8"))
     workspace = data.get("workspace_path")
@@ -107,14 +147,17 @@ def render(session: Path) -> str:
         out += ["---", "", "## Accounting", "",
                 "One row per turn the driver drove — the first, plus one per",
                 "resume. Tokens are per turn, not cumulative.", "",
-                "| turn | calls | tools | prompt | output | seconds |",
-                "|---|---|---|---|---|---|"]
+                "| turn | calls | tools | prompt | cached | output | seconds |",
+                "|---|---|---|---|---|---|---|"]
         for row in accounting:
             out.append(f"| {row.get('turn')} | {_call_count(row)} "
                        f"| {_tool_names(row)} | {row.get('prompt')} "
+                       f"| {row.get('cache_read')} "
                        f"| {row.get('output')} "
                        f"| {row.get('duration_seconds', 0):.0f} |")
         out.append("")
+
+    out += _cost(data)
     return "\n".join(out)
 
 
