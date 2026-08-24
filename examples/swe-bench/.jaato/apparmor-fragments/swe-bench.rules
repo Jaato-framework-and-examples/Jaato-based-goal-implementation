@@ -15,9 +15,29 @@
 #   python3     runs pytest, and the fixture itself
 #   git         the agent produces its patch with `git diff`
 #
-# Note what is NOT here: no curl, no package managers, no editors. If this agent
-# improvised its way to a network fetch it would be denied, and that scoping is
-# only real because the broad rule is gone.
+# Note what is NOT here: no curl, no editors, no build tools. Those binaries are
+# genuinely unreachable — `curl --version` from inside this confinement returns
+# "[Errno 13] Permission denied: '/usr/bin/curl'".
+#
+# What this does NOT buy you, and an earlier version of this comment wrongly
+# claimed it did: it is not a network boundary, and it does not keep the agent
+# to the packages it started with. `pip` is not a binary — it is `python3 -m
+# pip` — and python3 is right there in this list. A session confined by this
+# fragment was asked to try, and reported:
+#
+#   python3 -m pip --version                          -> 0, pip 26.1.2
+#   urllib.request.urlopen('https://pypi.org/simple/') -> 200
+#   python3 -m pip install --target ./deps six         -> 0, importable
+#   python3 -m pip install --target ./deps cffi        -> 0, manylinux wheel
+#   curl --version                                     -> Permission denied
+#
+# The template grants outbound `network inet stream`, the workspace is writable,
+# and a prebuilt wheel needs no compiler. So the honest claim is narrower than
+# it looks: this fragment scopes which BINARIES the agent may execute. Anything
+# reachable from a Python interpreter with a network socket is still reachable.
+#
+# That is a real boundary and worth having — it is what stopped the v18 agent
+# that improvised `curl` when its build tool failed. It is not a sandbox.
 #
 # Operator-authored by design: the profile template denies the agent write
 # access to this directory, so a confined session cannot grant itself exec

@@ -105,11 +105,25 @@ long, and each is something the goal genuinely requires:
 | `python3` | runs pytest, and the fixture itself |
 | `git` | the agent produces its patch with `git diff` |
 
-What is *absent* is the interesting part: no `curl`, no package managers, no
-editors. That scoping is real only because the broad rule is gone — the v18
-change was prompted by an agent that improvised `curl` when its build tool
-failed, and got it, because a blanket grant shadowed a fragment listing only
-java and mvn.
+What is *absent* matters, but less than it first appears. `curl`, editors and
+build tools are genuinely unreachable — from inside, `curl --version` comes
+back `[Errno 13] Permission denied`. That scoping is real only because the
+broad rule is gone: the v18 change was prompted by an agent that improvised
+`curl` when its build tool failed and got it, because a blanket grant shadowed
+a fragment listing only java and mvn.
+
+**It is not a network boundary, and it is not a sandbox.** This fragment scopes
+which *binaries* may be executed. `pip` is not a binary — it is `python3 -m
+pip` — and `python3` has to be here for the suite to run at all. We put the
+question to a session living inside this confinement, which reported
+`pip install --target ./deps six` succeeding, the package importing, PyPI
+answering `200` over urllib, and even `cffi` installing from a prebuilt
+manylinux wheel with no compiler involved. An earlier version of this section
+claimed the opposite; it was wrong, and the transcript that corrected it is the
+sort of thing [`tools/interrogate/`](../../tools/interrogate/) exists for.
+
+Anything reachable from a Python interpreter with a socket is still reachable.
+Scope the binaries, and know that is what you scoped.
 
 The profile names its fragment explicitly (`apparmor_fragments: [swe-bench]`)
 rather than leaving the field unset. Unset composes *every* fragment on the

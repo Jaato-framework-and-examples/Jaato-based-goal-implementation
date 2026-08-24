@@ -34,8 +34,15 @@ Both worked examples in [`transcripts/`](transcripts/) turn on that:
   failing with exit 126 — that is invisible outside the confinement because
   nothing logs it as a denial.
 
-The pattern in both: I had *a* hypothesis, it was partially right, and acting on
-it alone would have left the rest to be rediscovered later.
+- [**Confinement is not a sandbox**](transcripts/03-confinement-is-not-a-sandbox.md).
+  An AppArmor fragment claimed it allowed "no package managers". The session
+  inside it ran `pip install --target` successfully, imported the result, and
+  reached PyPI over urllib — while `curl` stayed blocked, which is the control
+  that proves the mechanism works and only the description was wrong. Nothing
+  outside could have shown this: a *successful* install logs no denial.
+
+The pattern in all three: I had *a* hypothesis, it was partially right, and
+acting on it alone would have left the rest to be rediscovered later.
 
 ## Asking well
 
