@@ -42,6 +42,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 DEPS = HERE / ".deps"
 DEPS_PROVISIONED = HERE / ".deps-provisioned"
+SCOPE_FILE = HERE / "scope.txt"
 INSTANCE_ID = os.environ.get("SWE_INSTANCE", "sympy__sympy-24539")
 
 # Where extra test dependencies live. `.deps` is what the runs import from;
@@ -174,11 +175,36 @@ def fresh() -> None:
         if path.is_dir():
             shutil.rmtree(path)
             print(f"  removed {path.name}/")
-    for name in ("instance.json", "test_patch.diff"):
+    for name in ("instance.json", "test_patch.diff", SCOPE_FILE.name):
         target = HERE / name
         if target.exists():
             target.unlink()
             print(f"  removed {name}")
+
+
+
+def write_scope(row: dict) -> str:
+    """Derive the test scope from the instance and record it for everyone else.
+
+    The scope is the PACKAGE containing the instance's tests — not just the file
+    carrying the failing test, because a fix that repairs one test and breaks
+    four others is not a fix and a file-scoped run cannot see it.
+
+    Written to a file because three processes need the same answer and only this
+    one can derive it: the driver verifies against it, the agent's fixture runs
+    it, and the agent's fixture lives inside a confinement whose environment we
+    do not control. It used to be a default baked into the fixture
+    (``sympy/polys/tests``), which was correct for exactly one instance — for
+    any other, the agent would test one package while the driver verified
+    another, and a green agent run would meet a refusal it could not explain.
+    """
+    test_file = next(
+        (line[6:].strip() for line in row["test_patch"].splitlines()
+         if line.startswith("+++ b/")), None)
+    scope = str(Path(test_file).parent) if test_file else "."
+    SCOPE_FILE.write_text(scope + "\n", encoding="utf-8")
+    print(f"test scope: {scope}")
+    return scope
 
 
 def _git_env() -> dict:
@@ -305,6 +331,7 @@ def main() -> int:
 
     # The project's own test dependencies, read out of the checkout it just made.
     provision_deps(agent_repo)
+    write_scope(row)
     reset()
 
     print("\nready. the bug is present and its test fails:")

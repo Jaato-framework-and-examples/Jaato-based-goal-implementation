@@ -102,11 +102,14 @@ If it fails you will be woken with the reason and can try again.
 """
 
 
-def _package_of(test_file: str | None) -> str:
-    """The test package containing a test file — the honest verification scope."""
-    if not test_file:
-        return "."
-    return str(Path(test_file).parent)
+def _scope() -> str:
+    """The test package to verify, as setup.py derived it from the instance.
+
+    Read rather than recomputed. The agent's fixture needs the same answer and
+    cannot derive it — it runs confined, against a checkout, with no instance
+    row — so there is one computation, in setup.py, and one file.
+    """
+    return (HERE / "scope.txt").read_text(encoding="utf-8").strip()
 
 
 def main() -> int:
@@ -137,13 +140,19 @@ def main() -> int:
         # repairs one test and breaks four others is not a fix, and verifying
         # only the target file cannot see that — the regression net would have
         # a hole exactly where regressions happen.
-        scope=os.environ.get("SWE_VERIFY_SCOPE", _package_of(test_file)),
+        scope=os.environ.get("SWE_VERIFY_SCOPE", _scope()),
         python=sys.executable,
         workspace=HERE,
         # Inside the example. The receipt is this example's output, and a
         # second example writing receipts would otherwise land in the same
         # directory at the repo root.
         receipts=Path(os.environ.get("SWE_RECEIPTS", HERE / "receipts")),
+        # The benchmark's own expectations. Gating on "the whole package is
+        # green" refuses a correct patch whenever the scope carries failures
+        # that predate it — sympy__sympy-24562 has four, from a 2023 sympy
+        # meeting a 2026 numpy, none of them in PASS_TO_PASS.
+        fail_to_pass=json.loads(inst["FAIL_TO_PASS"]),
+        pass_to_pass=json.loads(inst["PASS_TO_PASS"]),
     )
 
     cascade = ConfinedCascade(

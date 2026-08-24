@@ -36,7 +36,10 @@ DONE = HERE / ".test-exitcode"
 
 REPO = Path(os.environ.get("SWE_REPO", HERE.parent / "repo"))
 PYTHON = os.environ.get("SWE_PYTHON", sys.executable)
-SCOPE = os.environ.get("SWE_SCOPE", "sympy/polys/tests")
+# Written by setup.py from the instance itself. No default: a wrong scope
+# runs a suite that has nothing to do with the bug and reports it green.
+SCOPE = os.environ.get("SWE_SCOPE") or (
+    HERE.parent / "scope.txt").read_text(encoding="utf-8").strip()
 
 
 
@@ -98,12 +101,54 @@ def start() -> int:
     return 0
 
 
+def _contract() -> tuple[list, list]:
+    """The tests this instance is actually judged on.
+
+    Read from the instance row that setup.py already fetched. This is the same
+    contract the driver verifies against, and the agent is told it deliberately:
+    being judged on a rule you cannot see is not a test of anything useful.
+    """
+    instance = HERE.parent / "instance.json"
+    if not instance.is_file():
+        return [], []
+    row = json.loads(instance.read_text(encoding="utf-8"))
+    return json.loads(row["FAIL_TO_PASS"]), json.loads(row["PASS_TO_PASS"])
+
+
 def _summarise(output: str) -> tuple[str, str]:
-    failed = [ln for ln in output.splitlines() if ln.startswith("FAILED")]
+    """Judge the run the way the driver will, not by whether everything is green.
+
+    A scope can carry failures that have nothing to do with the bug — this
+    instance's does, four of them, where a 2023 sympy meets a 2026 numpy. An
+    agent told only "the suite failed" will go and try to fix those, which it
+    cannot do and was never asked to. So the answer names the two things that
+    matter: did the bug's tests start passing, and did anything that used to
+    pass stop.
+    """
+    failed = set()
+    for line in output.splitlines():
+        if line.startswith("FAILED") and " " in line:
+            ident = line.split(None, 1)[1].split(" - ")[0].strip()
+            failed.add(ident)
+            failed.add(ident.split("::")[-1])
     tail = (output.strip().splitlines() or [""])[-1]
-    if not failed and "passed" in tail:
-        return "passed", tail
-    return "failed", "; ".join(failed[:6]) or tail
+
+    fail_to_pass, pass_to_pass = _contract()
+    unfixed = [t for t in fail_to_pass if t in failed]
+    regressed = [t for t in pass_to_pass if t in failed]
+    unrelated = len([ln for ln in output.splitlines()
+                     if ln.startswith("FAILED")]) - len(unfixed) - len(regressed)
+
+    if unfixed or regressed:
+        detail = ""
+        if unfixed:
+            detail += f"still failing, must pass: {', '.join(unfixed[:4])}. "
+        if regressed:
+            detail += f"broken by your change: {', '.join(regressed[:4])}. "
+        return "failed", detail.strip()
+    note = (f" ({unrelated} unrelated failure(s) in this package predate your "
+            f"change and are not yours to fix)" if unrelated > 0 else "")
+    return "passed", f"{tail}{note}"
 
 
 def status() -> int:

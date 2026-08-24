@@ -39,3 +39,4 @@ examples/swe-bench/receipts/
 # .deps-provisioned by --reset. Both are provisioned, never authored.
 examples/swe-bench/.deps/
 examples/swe-bench/.deps-provisioned/
+examples/swe-bench/scope.txt

@@ -85,9 +85,55 @@ def _touched(patch_text: str) -> List[str]:
     return seen
 
 
+
+def _failed_names(stdout: str) -> set:
+    """Every test the run reported as FAILED, by full id AND by bare name.
+
+    Both forms are kept because the benchmark names tests inconsistently across
+    repos: sympy's lists carry bare function names (``test_issue_24543``) while
+    requests' carry parametrised ids
+    (``tests/test_utils.py::test_x[a-b]``). Matching either form avoids a table
+    of per-repo naming rules.
+    """
+    names = set()
+    for line in stdout.splitlines():
+        if not line.startswith("FAILED"):
+            continue
+        ident = line.split(None, 1)[1].split(" - ")[0].strip() if " " in line else ""
+        if ident:
+            names.add(ident)
+            names.add(ident.split("::")[-1])
+    return names
+
+
+def _contract_verdict(stdout: str, fail_to_pass: List[str],
+                      pass_to_pass: List[str]) -> tuple:
+    """Judge the run against the benchmark's own contract.
+
+    Returns ``(unfixed, regressed)`` — the FAIL_TO_PASS tests that did not flip,
+    and the PASS_TO_PASS tests that stopped passing.
+
+    This replaced a gate that required the whole package to be green, which
+    sounded stricter and was simply wrong: on ``sympy__sympy-24562`` four tests
+    in the scope fail before anything is touched, because a 2023 sympy meets a
+    2026 numpy. That gate would refuse a perfect fix for a reason the agent
+    could neither cause nor cure.
+
+    The instance row already carries the answer and this harness ignored it.
+    None of those four appear in PASS_TO_PASS — the benchmark curated them out.
+    So the honest question is not "is everything green" but "did the bug's tests
+    start passing, and did anything that used to pass stop".
+    """
+    failed = _failed_names(stdout)
+    return ([t for t in fail_to_pass if t in failed],
+            [t for t in pass_to_pass if t in failed])
+
+
 def make_verifier(*, repo: Path, base_commit: str, test_paths: List[str],
                   test_patch: str, scope: str, python: str,
-                  workspace: Path, receipts: Path, log=print):
+                  workspace: Path, receipts: Path,
+                  fail_to_pass: Optional[List[str]] = None,
+                  pass_to_pass: Optional[List[str]] = None, log=print):
     """Build the driver's `verify_finished` callable."""
 
     def verify(payload: Dict[str, Any]) -> Optional[str]:
@@ -154,6 +200,8 @@ def make_verifier(*, repo: Path, base_commit: str, test_paths: List[str],
             failed = [ln for ln in result.stdout.splitlines()
                       if ln.startswith("FAILED")]
             as_left_tail = (as_left.stdout.strip().splitlines() or [""])[-1]
+            unfixed, regressed = _contract_verdict(
+                result.stdout, fail_to_pass or [], pass_to_pass or [])
             touched_tests = [t for t in touched
                              if t.startswith(scope) or t in test_paths]
 
@@ -175,9 +223,15 @@ def make_verifier(*, repo: Path, base_commit: str, test_paths: List[str],
                 "with_project_tests": {"exit_code": result.returncode,
                                        "summary": tail,
                                        "failed": failed[:20]},
+                # The benchmark's contract, which is the gate. `failed` above
+                # can be non-empty on a good patch when the scope has failures
+                # that predate it; these two cannot.
+                "contract": {"unfixed": unfixed, "regressed": regressed,
+                             "fail_to_pass": len(fail_to_pass or []),
+                             "pass_to_pass": len(pass_to_pass or [])},
                 "needs_human_review": bool(
                     touched_tests
-                    or (as_left.returncode == 0 and result.returncode != 0)),
+                    or (as_left.returncode == 0 and (unfixed or regressed))),
             }, indent=2), encoding="utf-8")
 
             if touched_tests:
@@ -194,16 +248,22 @@ def make_verifier(*, repo: Path, base_commit: str, test_paths: List[str],
             # it why, the disagreement is recorded with needs_human_review, and
             # a person decides whether the test was wrong or merely
             # inconvenient. A machine cannot tell those apart.
-            if result.returncode != 0:
-                detail = "; ".join(failed[:4]) or tail
+            if unfixed or regressed:
+                detail = ""
+                if unfixed:
+                    detail += (f"these were supposed to pass after your fix and "
+                               f"did not: {', '.join(unfixed[:4])}. ")
+                if regressed:
+                    detail += (f"these passed before your change and now fail: "
+                               f"{', '.join(regressed[:4])}. ")
                 extra = ""
                 if as_left.returncode == 0:
                     extra = (" — note your own tests passed, so if you changed "
                              "a test deliberately, say why in file_notes; that "
                              "is a judgement for a human, and it will not land "
                              "on your say-so")
-                return (f"on a clean checkout with the project's own tests, the "
-                        f"suite failed: {detail}{extra}")
+                return (f"on a clean checkout with the project's own tests, "
+                        f"{detail.strip()}{extra}")
             log(f"[verify] clean-checkout run passed — {tail}")
             return None
         finally:
