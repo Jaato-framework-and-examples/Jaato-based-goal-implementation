@@ -31,6 +31,7 @@ signals need to be ones the agent never sees.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -39,9 +40,37 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-def _run(args: List[str], cwd: Path, timeout: int = 900):
+def _run(args: List[str], cwd: Path, timeout: int = 900,
+         env: Optional[Dict[str, str]] = None):
     return subprocess.run(args, cwd=str(cwd), capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, timeout=timeout, env=env)
+
+
+
+def _env_with_deps(workspace: Path) -> dict:
+    """The child's environment, with the workspace's `.deps` on PYTHONPATH.
+
+    Computed here rather than inherited. The agent's side of this runs inside a
+    confined runner whose environment is assembled by the daemon, and relying on
+    a variable surviving that path is a dependency this does not need — both
+    spawn sites already know where the workspace is.
+
+    The directory is added whether or not it exists yet. Python skips absent
+    sys.path entries at import time, so a package the agent installs mid-run
+    resolves on the next import with nothing to restart. That is the same reason
+    the telegram client wires its tools venv onto sys.path before the venv is
+    created.
+
+    The driver and the agent MUST see the same directory. If the agent installs
+    a dependency the verifier cannot import, the suite passes for the agent and
+    fails for the driver, and the run is refused over an environment skew rather
+    than anything about the patch.
+    """
+    deps = workspace / ".deps"
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{deps}{os.pathsep}{existing}" if existing else str(deps)
+    return env
 
 
 def _touched(patch_text: str) -> List[str]:
@@ -94,8 +123,9 @@ def make_verifier(*, repo: Path, base_commit: str, test_paths: List[str],
             # included. This is the agent's claim on its own terms. Nothing is
             # restricted: it may change any file, tests among them.
             log(f"[verify] run 1/2: {scope} with the agent's tests")
+            deps_env = _env_with_deps(workspace)
             as_left = _run([python, "-m", "pytest", scope, "-q", "--no-header",
-                            "-p", "no:cacheprovider"], worktree)
+                            "-p", "no:cacheprovider"], worktree, env=deps_env)
 
             # RUN 2 — the same source with the PROJECT's tests restored over
             # whatever the patch did to them. This is the reference.
@@ -119,7 +149,7 @@ def make_verifier(*, repo: Path, base_commit: str, test_paths: List[str],
 
             log(f"[verify] run 2/2: {scope} with the project's tests")
             result = _run([python, "-m", "pytest", scope, "-q", "--no-header",
-                           "-p", "no:cacheprovider"], worktree)
+                           "-p", "no:cacheprovider"], worktree, env=deps_env)
             tail = (result.stdout.strip().splitlines() or [""])[-1]
             failed = [ln for ln in result.stdout.splitlines()
                       if ln.startswith("FAILED")]

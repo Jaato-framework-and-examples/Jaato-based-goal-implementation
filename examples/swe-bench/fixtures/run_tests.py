@@ -39,6 +39,33 @@ PYTHON = os.environ.get("SWE_PYTHON", sys.executable)
 SCOPE = os.environ.get("SWE_SCOPE", "sympy/polys/tests")
 
 
+
+def _env_with_deps(workspace: Path) -> dict:
+    """The child's environment, with the workspace's `.deps` on PYTHONPATH.
+
+    Computed here rather than inherited. The agent's side of this runs inside a
+    confined runner whose environment is assembled by the daemon, and relying on
+    a variable surviving that path is a dependency this does not need — both
+    spawn sites already know where the workspace is.
+
+    The directory is added whether or not it exists yet. Python skips absent
+    sys.path entries at import time, so a package the agent installs mid-run
+    resolves on the next import with nothing to restart. That is the same reason
+    the telegram client wires its tools venv onto sys.path before the venv is
+    created.
+
+    The driver and the agent MUST see the same directory. If the agent installs
+    a dependency the verifier cannot import, the suite passes for the agent and
+    fails for the driver, and the run is refused over an environment skew rather
+    than anything about the patch.
+    """
+    deps = workspace / ".deps"
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{deps}{os.pathsep}{existing}" if existing else str(deps)
+    return env
+
+
 def _read() -> dict:
     if not STATE.exists():
         return {}
@@ -62,6 +89,7 @@ def start() -> int:
          f"{PYTHON} -m pytest {SCOPE} -q --no-header -p no:cacheprovider "
          f"> {LOG} 2>&1; echo $? > {DONE}"],
         cwd=str(REPO), start_new_session=True,
+        env=_env_with_deps(HERE.parent),
     )
     STATE.write_text(json.dumps(
         {"run": run, "started_at": time.time(), "status": "running"}, indent=2),

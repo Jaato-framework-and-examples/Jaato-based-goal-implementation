@@ -35,3 +35,7 @@ examples/swe-bench/*.py.bak
 examples/swe-bench/test_*.py
 examples/swe-bench/*.sh
 examples/swe-bench/receipts/
+# Test dependencies: .deps is what runs import from, and is restored from
+# .deps-provisioned by --reset. Both are provisioned, never authored.
+examples/swe-bench/.deps/
+examples/swe-bench/.deps-provisioned/
