@@ -1,6 +1,6 @@
-# Session `20260824_003505` — 19 turns
+# Session `20260824_003505`
 
-Profile `goal-actor`. 38 history entries.
+Profile `goal-actor`. 19 model steps across 3 driven turn(s) — the first, plus one per resume.
 
 ## Turn 1 — input
 
@@ -428,9 +428,12 @@ index 12bd2fc..be6e35d 100644
 
 ## Accounting
 
-| turn | calls | prompt | output | seconds |
-|---|---|---|---|---|
-| 0 | [{'name': 'get_environment', 'start_time': '2026-08-24T00:35:21.088275', 'end_time': '2026-08-24T00:35:21.109339', 'duration_seconds': 0.021064}, {'name': 'glob_files', 'start_time': '2026-08-24T00:35:21.088729', 'end_time': '2026-08-24T00:35:21.198093', 'duration_seconds': 0.109364}, {'name': 'glob_files', 'start_time': '2026-08-24T00:35:24.335013', 'end_time': '2026-08-24T00:35:25.466597', 'duration_seconds': 1.131584}, {'name': 'readFile', 'start_time': '2026-08-24T00:35:30.097920', 'end_time': '2026-08-24T00:35:30.102227', 'duration_seconds': 0.004307}, {'name': 'readFile', 'start_time': '2026-08-24T00:35:35.920107', 'end_time': '2026-08-24T00:35:35.922947', 'duration_seconds': 0.00284}, {'name': 'grep_content', 'start_time': '2026-08-24T00:35:40.241668', 'end_time': '2026-08-24T00:35:40.745728', 'duration_seconds': 0.50406}, {'name': 'readFile', 'start_time': '2026-08-24T00:35:44.343352', 'end_time': '2026-08-24T00:35:44.349033', 'duration_seconds': 0.005681}, {'name': 'cli_based_tool', 'start_time': '2026-08-24T00:35:50.412565', 'end_time': '2026-08-24T00:35:51.015701', 'duration_seconds': 0.603136}, {'name': 'updateFile', 'start_time': '2026-08-24T00:35:56.908541', 'end_time': '2026-08-24T00:35:56.919292', 'duration_seconds': 0.010751}, {'name': 'cli_based_tool', 'start_time': '2026-08-24T00:36:01.292344', 'end_time': '2026-08-24T00:36:01.894774', 'duration_seconds': 0.60243}, {'name': 'cli_based_tool', 'start_time': '2026-08-24T00:36:05.879368', 'end_time': '2026-08-24T00:36:15.891920', 'duration_seconds': 10.012552}, {'name': 'signal_completion', 'start_time': '2026-08-24T00:36:25.386856', 'end_time': '2026-08-24T00:36:25.411276', 'duration_seconds': 0.02442}] | 40708 | 357 | 71 |
-| 1 | [{'name': 'cli_based_tool', 'start_time': '2026-08-24T00:37:41.078210', 'end_time': '2026-08-24T00:37:41.180342', 'duration_seconds': 0.102132}, {'name': 'get_environment', 'start_time': '2026-08-24T00:37:44.925163', 'end_time': '2026-08-24T00:37:44.929006', 'duration_seconds': 0.003843}, {'name': 'signal_completion', 'start_time': '2026-08-24T00:37:50.477130', 'end_time': '2026-08-24T00:37:50.498388', 'duration_seconds': 0.021258}] | 39423 | 309 | 14 |
-| 2 | [{'name': 'cli_based_tool', 'start_time': '2026-08-24T00:38:33.913900', 'end_time': '2026-08-24T00:38:34.015605', 'duration_seconds': 0.101705}, {'name': 'cli_based_tool', 'start_time': '2026-08-24T00:38:38.292541', 'end_time': '2026-08-24T00:38:38.394147', 'duration_seconds': 0.101606}, {'name': 'readFile', 'start_time': '2026-08-24T00:38:41.668319', 'end_time': '2026-08-24T00:38:41.672145', 'duration_seconds': 0.003826}, {'name': 'writeNewFile', 'start_time': '2026-08-24T00:38:56.261686', 'end_time': '2026-08-24T00:38:56.264671', 'duration_seconds': 0.002985}, {'name': 'signal_completion', 'start_time': '2026-08-24T00:39:05.099098', 'end_time': '2026-08-24T00:39:05.117079', 'duration_seconds': 0.017981}] | 42790 | 458 | 34 |
+One row per turn the driver drove — the first, plus one per
+resume. Tokens are per turn, not cumulative.
+
+| turn | calls | tools | prompt | output | seconds |
+|---|---|---|---|---|---|
+| 0 | 12 | `get_environment`, `glob_files`, `readFile`, `grep_content`, `cli_based_tool`, `updateFile`, `signal_completion` | 40708 | 357 | 71 |
+| 1 | 3 | `cli_based_tool`, `get_environment`, `signal_completion` | 39423 | 309 | 14 |
+| 2 | 5 | `cli_based_tool`, `readFile`, `writeNewFile`, `signal_completion` | 42790 | 458 | 34 |
 

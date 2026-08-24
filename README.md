@@ -249,6 +249,26 @@ as readable turns. The driver prints outcomes; the transcript shows the calls
 that produced them, and the two can disagree — a run can exit 0 having wasted
 three calls on a wrong assumption, and only the transcript says so.
 
+```bash
+python tools/dump_turns.py .jaato/sessions/<id>.json > transcript.md
+```
+
+[`examples/swe-bench/sample-run/transcript.md`](examples/swe-bench/sample-run/transcript.md)
+is what it produces — one real run, every call and result, ending in a summary
+of where the turns went:
+
+| turn | calls | tools | prompt | output | seconds |
+|---|---|---|---|---|---|
+| 0 | 12 | `get_environment`, `glob_files`, `readFile`, `grep_content`, `cli_based_tool`, `updateFile`, `signal_completion` | 40708 | 357 | 71 |
+| 1 | 3 | `cli_based_tool`, `get_environment`, `signal_completion` | 39423 | 309 | 14 |
+| 2 | 5 | `cli_based_tool`, `readFile`, `writeNewFile`, `signal_completion` | 42790 | 458 | 34 |
+
+Three rows for three driven turns — the first, then one per resume — against 19
+model steps. The tool ordering in turn 0 is the whole argument for preloading
+`filesystem_query`: it asks the clock, lists the workspace, and only then reads
+a file. Four earlier runs had no `glob_files` to call and every one of them
+guessed a path wrong instead.
+
 ## Tests
 
 ```bash

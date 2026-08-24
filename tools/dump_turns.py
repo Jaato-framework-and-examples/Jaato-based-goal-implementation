@@ -37,13 +37,44 @@ def _block(body: str, limit: int, workspace: str | None) -> str:
     return f"```\n{body}\n```\n"
 
 
+def _calls(row: dict) -> list:
+    """The turn's tool calls.
+
+    ``function_calls`` is a LIST of per-call records — name, start, end,
+    duration — not a count. Rendering it directly puts every timestamp in one
+    table cell, which is how this was first shipped.
+    """
+    calls = row.get("function_calls")
+    return calls if isinstance(calls, list) else []
+
+
+def _call_count(row: dict) -> int:
+    return len(_calls(row))
+
+
+def _tool_names(row: dict) -> str:
+    """Which tools the turn used, in order, each named once.
+
+    The sequence is the interesting part — whether the agent looked something
+    up before acting on it is visible here and nowhere else.
+    """
+    seen = []
+    for call in _calls(row):
+        name = call.get("name") if isinstance(call, dict) else None
+        if name and name not in seen:
+            seen.append(name)
+    return ", ".join(f"`{n}`" for n in seen) or "—"
+
+
 def render(session: Path) -> str:
     data = json.loads(session.read_text(encoding="utf-8"))
     workspace = data.get("workspace_path")
-    out = [f"# Session `{data['session_id']}` — {data['turn_count']} turns",
+    driven = len(data.get("turn_accounting") or [])
+    out = [f"# Session `{data['session_id']}`",
            "",
            f"Profile `{data.get('profile_name')}`. "
-           f"{len(data.get('history') or [])} history entries.",
+           f"{data['turn_count']} model steps across {driven} driven "
+           f"turn(s) — the first, plus one per resume.",
            ""]
 
     turn = 0
@@ -74,11 +105,14 @@ def render(session: Path) -> str:
     accounting = data.get("turn_accounting") or []
     if accounting:
         out += ["---", "", "## Accounting", "",
-                "| turn | calls | prompt | output | seconds |",
-                "|---|---|---|---|---|"]
+                "One row per turn the driver drove — the first, plus one per",
+                "resume. Tokens are per turn, not cumulative.", "",
+                "| turn | calls | tools | prompt | output | seconds |",
+                "|---|---|---|---|---|---|"]
         for row in accounting:
-            out.append(f"| {row.get('turn')} | {row.get('function_calls')} "
-                       f"| {row.get('prompt')} | {row.get('output')} "
+            out.append(f"| {row.get('turn')} | {_call_count(row)} "
+                       f"| {_tool_names(row)} | {row.get('prompt')} "
+                       f"| {row.get('output')} "
                        f"| {row.get('duration_seconds', 0):.0f} |")
         out.append("")
     return "\n".join(out)
