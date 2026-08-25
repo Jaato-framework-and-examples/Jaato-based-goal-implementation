@@ -81,6 +81,39 @@ plugin_configs:
       # A real deployment gates the goal actor like any other agent.
       defaultPolicy: allow
 
+# Drop the framework's own instruction layers.  The persona
+# (.jaato/agents/goal-actor.md) and the plugin instructions are NOT affected —
+# `suppress_base_instructions` never touches those.
+#
+# `true` means {disk: true, constants: true}.  The third piece, `security`, is
+# KEPT, and deliberately: a resume arrives wrapped as untrusted content, and
+# the persona spends a paragraph teaching the agent to read that block as a
+# record of its own state rather than as a person talking to it.  Dropping the
+# boundary would take {security: true} spelled out, and should not be done here.
+#
+# `disk` suppresses nothing today — there is no .jaato/instructions/ in this
+# workspace.  It is in scope so that adding one later is a deliberate act
+# rather than a silent change to every prompt.
+#
+# `constants` is the piece that does something.  It appends three framework
+# blocks, and two of them argue against this profile:
+#   - The task-completion block says "continue working until the request is
+#     truly fulfilled ... do not stop and summarize what is left."  That is the
+#     exact move this agent exists to make.  Suspending IS stopping mid-goal;
+#     what makes it safe is the two-branch contract below, not persistence.
+#   - It advises spawning subagents for multi-area work.  There is no subagent
+#     plugin in `plugins` above, so that is prompt budget spent describing a
+#     capability the agent does not have.
+# The part worth keeping — never claim a result you cannot point to a tool call
+# for — the persona now states itself, under "Writing a report".
+#
+# Measured, because it also affects what a reader can reproduce: with
+# jaato-premium installed those three blocks are ~4,100 characters; the public
+# base versions are ~1,000.  Left in, the per-turn prompt differs by roughly
+# 750 tokens between a premium checkout and the public one this repo targets —
+# enough to make the committed sample-run cost figures not reproduce.
+suppress_base_instructions: true
+
 # Context grows monotonically because every resume continues the SAME session.
 # `budget` is the strategy that makes policy-aware removal decisions and can
 # collect continuously rather than only at a threshold breach.

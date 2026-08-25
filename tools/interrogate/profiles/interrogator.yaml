@@ -42,6 +42,23 @@ plugin_configs:
     policy:
       defaultPolicy: allow
 
+# Drop the framework's own instruction layers, matching the two goal-actor
+# profiles — see .jaato/profiles/goal-actor.yaml for the full reasoning.  `true`
+# keeps the untrusted-content boundary, which matters more here than anywhere
+# else in the repo: the question arrives through `session.wake` wrapped as
+# untrusted content, and the whole point is that the agent reads it as data.
+#
+# READ THIS BEFORE USING THIS PROFILE.  There is no .jaato/agents/interrogator.md
+# anywhere in this repo, and interrogate.py's own docstring says "what obliges
+# the agent to answer at all is its persona, not this text."  With the framework
+# constants suppressed and no persona to replace them, the only behavioural
+# instruction left is the schema descriptions below.  That is untested: all
+# three transcripts in ../transcripts/ took the other route — waking a
+# goal-actor session, which answers under its own profile and its own persona.
+# This profile is the documented alternative for a session you decide to make
+# interrogable up front, and it needs a persona written before it is relied on.
+suppress_base_instructions: true
+
 gc:
   type: budget
   threshold_percent: 75.0
