@@ -78,9 +78,15 @@ Two ways round it:
   so this is also the honest outcome. Works with any two-branch profile and
   needs no configuration. The template does this.
 - **Create the session under [`profiles/interrogator.yaml`](profiles/interrogator.yaml)**,
-  whose contract asks for an answer and nothing else. Only available if you
-  decided before the session existed that you would want to question it — which,
-  for anything you are evaluating rather than merely running, you probably will.
+  whose contract asks for an answer and nothing else, and whose persona is
+  [`agents/interrogator.md`](agents/interrogator.md). Both are resolved through
+  `config_root` — the optional fifth argument — which replaces the workspace
+  tier of the config lookup, so the daemon reads them from this directory
+  instead of `<workspace>/.jaato/`. That route needs no closing instruction
+  about how to end the turn, and no reminder to report failures verbatim: the
+  persona carries both. Only available if you decided before the session
+  existed that you would want to question it — which, for anything you are
+  evaluating rather than merely running, you probably will.
 
 ## What it is not
 

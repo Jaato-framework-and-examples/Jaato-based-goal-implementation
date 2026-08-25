@@ -48,15 +48,17 @@ plugin_configs:
 # else in the repo: the question arrives through `session.wake` wrapped as
 # untrusted content, and the whole point is that the agent reads it as data.
 #
-# READ THIS BEFORE USING THIS PROFILE.  There is no .jaato/agents/interrogator.md
-# anywhere in this repo, and interrogate.py's own docstring says "what obliges
-# the agent to answer at all is its persona, not this text."  With the framework
-# constants suppressed and no persona to replace them, the only behavioural
-# instruction left is the schema descriptions below.  That is untested: all
-# three transcripts in ../transcripts/ took the other route — waking a
-# goal-actor session, which answers under its own profile and its own persona.
-# This profile is the documented alternative for a session you decide to make
-# interrogable up front, and it needs a persona written before it is relied on.
+# The persona that replaces them is ../agents/interrogator.md, resolved from
+# `config_root` — interrogate.py's optional 5th argument.  Setting config_root
+# REPLACES the workspace tier of the config lookup, so with
+# `config_root=tools/interrogate` the daemon reads ./profiles/ and ./agents/
+# here rather than <workspace>/.jaato/.  That is why this directory has no
+# .jaato/ of its own, and why the persona is a sibling of this file.
+#
+# Still untested end to end: all three transcripts in ../transcripts/ took the
+# other route — waking a goal-actor session, which answers under its own
+# profile and its own persona.  This one is for a session you decide to make
+# interrogable before it exists.
 suppress_base_instructions: true
 
 gc:

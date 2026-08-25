@@ -4,7 +4,15 @@
      under a GOAL profile will otherwise answer and then fight its own
      completion processor, which wants a patch this question never involved.
      `suspended` is also the honest outcome — the session is not finishing
-     anything, only pausing again. -->
+     anything, only pausing again.
+
+     THAT CLOSING INSTRUCTION IS ROUTE-SPECIFIC.  It is written for waking a
+     session created under a GOAL profile, which is what every transcript in
+     this directory did.  A session created under profiles/interrogator.yaml
+     answers under agents/interrogator.md, whose contract asks for an answer
+     and nothing else — there `finished` is correct, and the persona already
+     carries the standing parts of this template, so a question to one of
+     those needs only the observation and the ask. -->
 
 Not a new goal — a question about work you have already done. [State plainly
 whether anything is wrong. If the work was accepted, say so: an agent that
