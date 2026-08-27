@@ -11,6 +11,13 @@ from datetime import timedelta
 
 import pytest
 
+from jaato_sdk import (
+    ConnectionClosedError,
+    ReconnectingError,
+    SessionNotConfirmed,
+    SessionRefused,
+)
+
 from goal_cascade.driver import GoalCascade
 from goal_cascade.store import DueRow, utcnow
 
@@ -110,14 +117,29 @@ class _FakeErrorEvent:
 
 
 class _FakeClient:
-    """A client that refuses the spawn, reporting `error_type` first.
+    """A client that refuses the spawn, in either of the two shapes it can.
 
-    Mirrors the daemon's shape: `create_session` returns None on refusal and
-    the reason arrives separately as an ErrorEvent.
+    `error_type` mirrors the daemon's shape: `create_session` returns None on
+    refusal and the reason arrives separately as an ErrorEvent.
+
+    `raises` mirrors the SDK's shape: the recovery client checks its connection
+    state before sending and raises instead of returning, so a daemon that is
+    down or restarting fails the spawn without the daemon ever hearing of it.
+    Both can happen on one call — the daemon can name the budget and then go
+    away — so the event still fires first when both are set.
     """
 
-    def __init__(self, error_type: str) -> None:
+    def __init__(
+        self,
+        error_type=None,
+        raises=None,
+        budget_set_raises=None,
+        budget_get_raises=None,
+    ) -> None:
         self._error_type = error_type
+        self._raises = raises
+        self._budget_set_raises = budget_set_raises
+        self._budget_get_raises = budget_get_raises
         self._handlers = []
         self.disconnected = False
 
@@ -129,25 +151,37 @@ class _FakeClient:
         return True
 
     async def cascade_budget_set(self, *_a, **_kw) -> None:
+        if self._budget_set_raises is not None:
+            raise self._budget_set_raises
         return None
 
     async def cascade_budget_get(self, *_a, **_kw) -> None:
+        if self._budget_get_raises is not None:
+            raise self._budget_get_raises
         return None
 
     async def create_session(self, **_kw):
-        for handler in list(self._handlers):
-            handler(_FakeErrorEvent(self._error_type, "no headroom left"))
+        if self._error_type is not None:
+            for handler in list(self._handlers):
+                handler(_FakeErrorEvent(self._error_type, "no headroom left"))
+        if self._raises is not None:
+            raise self._raises
         return None
 
     async def disconnect(self) -> None:
         self.disconnected = True
 
 
-def _run_refused_spawn(tmp_path, error_type: str) -> int:
-    """Drive run() to the spawn refusal and return its exit code."""
+def _run_refused_spawn(tmp_path, error_type=None, raises=None, lines=None) -> int:
+    """Drive run() to the spawn refusal and return its exit code.
+
+    `lines`, when given, collects what the driver logged on the way out.
+    """
     cascade = _cascade(tmp_path)
     cascade.session_id = None
-    client = _FakeClient(error_type)
+    if lines is not None:
+        cascade.log = lines.append
+    client = _FakeClient(error_type, raises)
     cascade._new_client = lambda: client
     # The ceiling is verified before the spawn; that path has its own tests.
     async def _no_refusal(_client, **_kw):
@@ -170,6 +204,157 @@ def test_budget_exhausted_spawn_exits_two_not_one(tmp_path):
 def test_other_spawn_refusals_still_exit_one(tmp_path):
     """Exit 2 means the ceiling specifically, not any refused spawn."""
     assert _run_refused_spawn(tmp_path, "ConfigurationError") == 1
+
+
+def test_spawn_transport_failure_exits_instead_of_crashing(tmp_path):
+    """A daemon restarting mid-spawn must not take the driver down with it.
+
+    `create_session` guards on connection state and RAISES rather than
+    returning None when the client is not CONNECTED. Those types subclass
+    Exception directly, so `except BudgetExhausted` (a RuntimeError) does not
+    catch them and nothing between here and sys.exit does either — the process
+    died with a traceback instead of reporting an exit code.
+    """
+    assert _run_refused_spawn(tmp_path, raises=ReconnectingError()) == 1
+
+
+def test_transport_failure_names_its_cause(tmp_path):
+    """The generic message is the fallback for having no cause, not a default.
+
+    "see the daemon error above" is a lie when the daemon never heard of the
+    spawn: there is nothing above to see. The exception is the only account of
+    what happened, so it has to reach the log.
+    """
+    lines = []
+    _run_refused_spawn(
+        tmp_path, raises=ReconnectingError("Client is reconnecting"), lines=lines
+    )
+    refusals = [line for line in lines if "spawn refused" in line]
+    assert refusals == ["spawn refused — ReconnectingError: Client is reconnecting"]
+
+
+def test_exhausted_budget_outranks_a_transport_failure(tmp_path):
+    """The ceiling still decides the exit code when the connection also drops.
+
+    The daemon can name the budget and be gone before the call returns. Exit 2
+    is decided by what the daemon SAID, not by how the call ended — routing the
+    exception around this check would turn a correct budget stop (a valid
+    outcome, invariant 7) into a generic failure. This is the case most likely
+    to regress, because the exception path is the one a fix tends to add last.
+    """
+    assert _run_refused_spawn(
+        tmp_path,
+        error_type="CascadeExhaustedError",
+        raises=ReconnectingError(),
+    ) == 2
+
+
+def test_exhausted_budget_survives_the_daemon_raising_its_refusal(tmp_path):
+    """The ceiling verdict must not depend on HOW the daemon says no.
+
+    `create_session` no longer returns None when the daemon refuses — it raises
+    `SessionRefused`, which subclasses RuntimeError. So does BudgetExhausted,
+    but they are SIBLINGS, so `except BudgetExhausted` does not catch it: an
+    exhausted budget went from exit 2 to an unhandled traceback. This mirrors
+    the real client, which dispatches the ErrorEvent to handlers before turning
+    it into the exception, so both signals are present on one call.
+    """
+    assert _run_refused_spawn(
+        tmp_path,
+        error_type="CascadeExhaustedError",
+        raises=SessionRefused(
+            "the daemon refused session.new: no headroom left",
+            error_type="CascadeExhaustedError",
+        ),
+    ) == 2
+
+
+def test_non_budget_daemon_refusal_exits_one_with_its_cause(tmp_path):
+    """A refusal the daemon explains is still exit 1, and still says why."""
+    lines = []
+    code = _run_refused_spawn(
+        tmp_path,
+        error_type="ConfigurationError",
+        raises=SessionRefused(
+            "the daemon refused session.new: no such profile",
+            error_type="ConfigurationError",
+        ),
+        lines=lines,
+    )
+    assert code == 1
+    assert [line for line in lines if "spawn refused" in line] == [
+        "spawn refused — SessionRefused: the daemon refused session.new: "
+        "no such profile"
+    ]
+
+
+def test_unconfirmed_spawn_exits_rather_than_crashing(tmp_path):
+    """The third #635 shape: sent, unanswered — a session MAY be running.
+
+    The driver has no retry, so `may_exist` changes nothing it does today; what
+    matters here is that this exits instead of raising. If retry is ever added,
+    branch on `may_exist` — session.new has no idempotency key, so retrying an
+    unconfirmed create spawns a SECOND session with its own runner and pool
+    slot rather than resuming the first.
+    """
+    assert _run_refused_spawn(
+        tmp_path,
+        raises=SessionNotConfirmed(
+            "the connection dropped before session.new was answered",
+            cause="disconnect",
+        ),
+    ) == 1
+
+
+def _run_budget_failure(tmp_path, *, set_raises=None, get_raises=None) -> tuple:
+    """Drive run() to a budget failure. Returns (exit_code, logged_lines).
+
+    Unlike `_run_refused_spawn` this leaves `_budget_refusal` in place — the
+    point is to exercise the real ceiling-verification path, including the
+    `cascade_budget_get` inside it.
+    """
+    lines = []
+    cascade = _cascade(tmp_path)
+    cascade.session_id = None
+    cascade.log = lines.append
+    client = _FakeClient(budget_set_raises=set_raises, budget_get_raises=get_raises)
+    cascade._new_client = lambda: client
+    return asyncio.run(cascade.run()), lines
+
+
+def test_budget_set_transport_failure_refuses_to_start(tmp_path):
+    """A ceiling that could not be declared has not been declared.
+
+    `cascade_budget_set` sits behind the same pre-send state gate as the spawn,
+    so a daemon restart makes it raise. Starting anyway would run a goal with
+    nothing to stop it, which invariant 7 forbids — and crashing here would
+    look identical to the daemon refusing the budget while being a different
+    fact entirely.
+    """
+    code, lines = _run_budget_failure(
+        tmp_path, set_raises=ConnectionClosedError()
+    )
+    assert code == 1
+    assert any(
+        "cascade budget was not accepted: ConnectionClosedError:" in line
+        for line in lines
+    )
+
+
+def test_budget_readback_transport_failure_refuses_to_start(tmp_path):
+    """The read-back is the proof, and an unanswerable question proves nothing.
+
+    `_budget_refusal` reports what the daemon SAID. When the connection cannot
+    carry the question there is nothing said, so it raises rather than
+    returning a reason it does not have — "no ceiling" and "could not ask" must
+    not collapse into one value. The caller turns it into a refusal here.
+    """
+    code, lines = _run_budget_failure(tmp_path, get_raises=ReconnectingError())
+    assert code == 1
+    assert any(
+        "cascade budget was not accepted: ReconnectingError:" in line
+        for line in lines
+    )
 
 
 class _FakeTerminated:

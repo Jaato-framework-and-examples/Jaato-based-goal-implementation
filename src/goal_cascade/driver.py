@@ -40,6 +40,31 @@ from typing import Any, Callable, Dict, Optional
 
 from jaato_sdk import ClientType, EventType, IPCRecoveryClient
 
+# The two ways a spawn can fail without returning, kept greppable so the
+# assumption is visible if the SDK's hierarchy moves:
+#
+#   * SessionCreateFailed — the daemon was reached and the spawn still produced
+#     no session. `create_session` no longer returns None for this; its
+#     contract is now "the new session ID, never None — a failure raises".
+#   * ReconnectingError / ConnectionClosedError / ConnectionError — the recovery
+#     client's pre-send state gate rejected the call before it left the process.
+#
+# They share no base but Exception, so neither implies the other. Note also that
+# SessionCreateFailed subclasses RuntimeError, as does BudgetExhausted below —
+# SIBLINGS, so `except BudgetExhausted` does not catch it and the ceiling still
+# needs the explicit check further down.
+from jaato_sdk import (
+    ConnectionClosedError,
+    ReconnectingError,
+    SessionCreateFailed,
+)
+
+# Not re-exported from the package root, unlike the two above. Note that it
+# SHADOWS the builtin and subclasses Exception, not OSError: an unaliased
+# `except ConnectionError` here would bind the builtin and catch nothing the
+# SDK actually raises. The alias keeps that trap visible at the catch site.
+from jaato_sdk.client.recovery import ConnectionError as SdkConnectionError
+
 from .store import DueRow, GoalStore
 
 # A resume that the agent scheduled unreasonably far out still has to be bounded
@@ -153,6 +178,12 @@ class GoalCascade:
         The daemon answers ``cascade.budget.get`` with a ``SystemMessageEvent``
         carrying JSON: the declared limits, or ``{"declared": false}`` when the
         cascade id is uncapped.
+
+        Reports only what the daemon said. A connection that cannot carry the
+        question raises out of here instead, because "the daemon denies having a
+        ceiling" and "the daemon could not be asked" are different facts and
+        this return value has no way to hold both; the caller catches it and
+        turns it into a refusal string there.
         """
         answered = asyncio.Event()
         state: Dict[str, Any] = {}
@@ -185,10 +216,14 @@ class GoalCascade:
     def _watch_spawn_refusal(self, client: IPCRecoveryClient) -> "_SpawnRefusal":
         """Watch for the daemon's reason while a spawn is attempted.
 
-        ``create_session`` reports failure as ``None``, which cannot say why.
-        The one reason the driver must tell apart is an exhausted cascade
-        budget: that is the operator's ceiling working, not the goal breaking,
-        and invariant 7 requires the two to exit differently.
+        A refused spawn now raises ``SessionRefused``, which carries the
+        daemon's own ``error_type`` — but this watcher predates that and still
+        earns its place: it is what makes the ceiling legible on the paths the
+        exception does not cover, and it is the source the exit-code decision
+        actually reads. The one reason the driver must tell apart is an
+        exhausted cascade budget: that is the operator's ceiling working, not
+        the goal breaking, and invariant 7 requires the two to exit
+        differently.
 
         The daemon refuses such a spawn rather than starting a doomed session —
         a ceiling that must spend to enforce itself is not a ceiling — and says
@@ -432,16 +467,33 @@ class GoalCascade:
 
         Exit codes are distinct on purpose — a run stopped by its budget is a
         different result from a goal achieved, and must never look like success.
+        A daemon that is down or restarting when the driver spawns its session
+        is reported as a refused spawn, not raised: the caller gets an exit code
+        on every path out of here.
         """
         client = self._client = self._new_client()
         if not await client.connect(timeout=120.0):
             self.log("could not connect or autostart the daemon — run jaato-doctor")
             return 1
         try:
-            await client.cascade_budget_set(
-                self.cascade_id, limits=self.budget, degrade=self.degrade
-            )
-            refusal = await self._budget_refusal(client)
+            # Both budget calls go through the same pre-send state gate as the
+            # spawn below, so a daemon that is down or restarting fails them by
+            # raising rather than returning. That is not a distinct outcome from
+            # a refused ceiling: either way the ceiling is unproven, and
+            # invariant 7 forbids starting a goal whose ceiling is unproven. So
+            # it funnels into the refusal string the check below already reads,
+            # rather than becoming a second way to leave this method.
+            try:
+                await client.cascade_budget_set(
+                    self.cascade_id, limits=self.budget, degrade=self.degrade
+                )
+                refusal = await self._budget_refusal(client)
+            except (
+                ReconnectingError,
+                ConnectionClosedError,
+                SdkConnectionError,
+            ) as exc:
+                refusal = f"{type(exc).__name__}: {exc}"
             if refusal is not None:
                 self.log(f"[error] cascade budget was not accepted: {refusal}")
                 self.log("[error] refusing to start — a goal with no ceiling"
@@ -450,6 +502,15 @@ class GoalCascade:
             self.log(f"[budget] {self.budget}")
 
             refusal = self._watch_spawn_refusal(client)
+            # A spawn that produces no session reports it by raising, not by
+            # returning None: the daemon can refuse (SessionCreateFailed), or
+            # the recovery client can reject the send before it leaves the
+            # process because it is not CONNECTED — a daemon restart mid-run is
+            # enough for the latter. Neither is a different OUTCOME from the
+            # other, or from a None return: either way there is no session.
+            # Carry the cause down to the falsy check below, which is the single
+            # place this method decides an exit code, rather than deciding here.
+            spawn_error: Optional[Exception] = None
             try:
                 self.session_id = await client.create_session(
                     profile=self.profile,
@@ -457,19 +518,45 @@ class GoalCascade:
                     cascade_driver_id=self.cascade_id,
                     timeout=60.0,
                 )
+            except (
+                SessionCreateFailed,
+                ReconnectingError,
+                ConnectionClosedError,
+                SdkConnectionError,
+            ) as exc:
+                # No reset needed: session_id is None from __init__ and is
+                # assigned only by the statement that just raised.
+                spawn_error = exc
             finally:
                 refusal.stop()
 
             if not self.session_id:
                 # A ceiling that stopped the goal is not a failure — the work
                 # was valid, the operator's limit simply ran out — so it must
-                # not exit like one. Everything else is a genuine refusal whose
-                # cause the driver cannot see; the daemon already logged it.
+                # not exit like one. That verdict does not depend on HOW the
+                # spawn ended: if the daemon named the budget, the budget is the
+                # answer whether that arrived as a None return or a refusal
+                # raised. The ErrorEvent that sets `exhausted` is dispatched to
+                # handlers before the SDK turns it into SessionRefused, so it
+                # still reaches the watcher on the raising path.
+                #
+                # Everything else exits 1, naming the cause when the failure
+                # carried one and deferring to the daemon's own log when it did
+                # not — a spawn the daemon merely declined explains itself
+                # there, but one the client never sent leaves nothing to read.
                 if refusal.exhausted:
                     raise BudgetExhausted(
                         refusal.message or "cascade budget has no headroom left"
                     )
-                self.log("spawn refused — see the daemon error above for the cause")
+                if spawn_error is not None:
+                    self.log(
+                        f"spawn refused — {type(spawn_error).__name__}:"
+                        f" {spawn_error}"
+                    )
+                else:
+                    self.log(
+                        "spawn refused — see the daemon error above for the cause"
+                    )
                 return 1
 
             # Armed before the goal is sent, not after — see _arm_completion.
